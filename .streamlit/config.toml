@@ -1,0 +1,29 @@
+[server]
+# Only accept connections from this computer, not from other devices on the network.
+address = "localhost"
+
+[browser]
+# Keep everything local: don't send anonymous usage statistics to Streamlit.
+gatherUsageStats = false
+
+[client]
+# Hide the "Deploy" button; this app is meant to run locally.
+toolbarMode = "minimal"
+
+# The app follows the computer's light/dark setting.
+[theme]
+baseRadius = "0.5rem"
+
+[theme.light]
+primaryColor = "#6D28D9"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F6F7"
+textColor = "#18181B"
+borderColor = "#E4E4E7"
+
+[theme.dark]
+primaryColor = "#A78BFA"
+backgroundColor = "#0B0B0D"
+secondaryBackgroundColor = "#17171A"
+textColor = "#EDEDEF"
+borderColor = "#27272A"

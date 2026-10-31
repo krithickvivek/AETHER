@@ -1,0 +1,2 @@
+# Only needed for the web interface (app.py). The command-line app uses the standard library.
+streamlit>=1.57

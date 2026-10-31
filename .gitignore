@@ -1,0 +1,29 @@
+# Python build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Credentials and local secrets
+.env
+.env.*
+*.env
+.streamlit/secrets.toml
+.claude/settings.local.json
+
+# Local run data (history, generated projects, logs)
+.aether/
+
+# Model files
+*.gguf
+*.safetensors
+*.bin
+models/
+
+# Temporary files
+*.tmp
+*.log
