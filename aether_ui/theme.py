@@ -24,10 +24,10 @@ DARK = {
 
 # Agents planned for later stages of the project. Shown as "Not built yet".
 PLANNED_STAGES = [
-    ("Coder", "Generate code"),
+    ("Developer", "Generate project files"),
     ("Reviewer", "Review code"),
     ("Tester", "Write and run tests"),
-    ("Delivery", "Package and document"),
+    ("Documentation", "Write project documentation"),
 ]
 
 CSS = Template("""

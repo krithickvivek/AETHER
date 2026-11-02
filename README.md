@@ -50,7 +50,7 @@ python -m streamlit run app.py
 Your browser opens at http://localhost:8501. The app has three pages, listed in the top navigation:
 
 - **Workspace:** enter a requirement (or pick an example) and click **Generate plan**. The page shows:
-  - **Workflow:** the status of each step as it actually ran (done, failed, or not reached). The Code, Review, Test, and Deliver agents are listed as *Not built yet*.
+  - **Workflow:** the status of each step as it actually ran (done, failed, or not reached). The Developer, Reviewer, Tester, and Documentation agents are listed as *Not built yet*.
   - **Handoff:** the Manager → Planner → Plan flow and the exact `TaskBrief` the Planner received.
   - **Plan explorer:** all steps, or one tab per phase. Each step is tagged with the rule that added it (Core or a feature). You can download the plan as Markdown.
 - **History:** successful runs saved on this computer. **Open** shows a saved run again without re-running it. **Clear history** deletes them.
@@ -136,6 +136,9 @@ aether/planner.py    Planner interface and RuleBasedPlanner with its step rules
 aether/ollama_planner.py  Experimental OllamaPlanner (local llama3.2:1b) and its output checks
 aether/fallback.py   FallbackPlanner: tries one planner, uses another if it fails, records why
 aether/config.py     Chooses the planner from the AETHER_PLANNER setting (rule by default)
+aether/context.py    Shared ProjectContext, AgentEvent activity log, and RunStore (.aether/runs/<run_id>/)
+aether/agents.py     Agent interface (AgentResult) and PlannerAgent; ManagerAgent.run_pipeline runs agents in order
+aether/workspace.py  Workspace: the only safe way for agents to write project files (one folder per run, limits)
 tests/               Unit tests (built-in unittest)
 ```
 

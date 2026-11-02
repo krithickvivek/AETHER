@@ -1,10 +1,19 @@
 """Manager agent: understands a requirement and coordinates the workflow."""
 
 import re
-from typing import Callable
+import time
+from dataclasses import fields
+from typing import TYPE_CHECKING, Callable
 
+from aether.context import COMPLETED, DONE, FAILED, SKIPPED, ProjectContext, RunStore
 from aether.models import Plan, TaskBrief
 from aether.planner import Planner
+
+if TYPE_CHECKING:
+    from aether.agents import Agent
+
+# ProjectContext fields an agent may set through AgentResult.updates.
+_UPDATABLE = {f.name for f in fields(ProjectContext)} - {"run_id", "requirement", "created_at", "status", "events"}
 
 # Keywords that tell the Manager a requirement needs a particular feature.
 FEATURE_KEYWORDS = {
@@ -57,3 +66,66 @@ class ManagerAgent:
         plan = self.planner.create_plan(brief)
         self.log(f"[Manager] Received a plan with {len(plan.steps)} steps from {plan.planner_name}.")
         return plan
+
+    def run_pipeline(self, requirement: str, agents: list["Agent"], store: RunStore | None = None) -> ProjectContext:
+        """Run a requirement through a sequence of agents, sharing one ProjectContext.
+
+        Each agent's result is recorded as it really happened. If an agent fails or crashes,
+        the later agents are recorded as skipped. With a store, the context is saved after every step.
+        """
+        context = ProjectContext.new(requirement)
+        try:
+            context.brief = self.understand(requirement)
+        except ValueError as exc:
+            context.record("Manager", "Understand requirement", FAILED, str(exc))
+            return self._finish(context, agents, store, failed=True)
+
+        count = len(context.brief.features)
+        context.record("Manager", "Understand requirement", DONE, f"{count} feature{'s' if count != 1 else ''} detected")
+        self.log(f"[Manager] Requirement received: {context.brief.requirement}")
+        self._save(context, store)
+
+        for index, agent in enumerate(agents):
+            self.log(f"[Manager] Handing off to {agent.name}...")
+            start = time.perf_counter()
+            try:
+                result = agent.run(context)
+            except Exception as exc:
+                context.record(agent.name, agent.action, FAILED, f"{type(exc).__name__}: {exc}",
+                               _elapsed(start))
+                return self._finish(context, agents[index + 1:], store, failed=True)
+
+            for attempt in result.attempts:
+                context.record(agent.name, attempt.action, attempt.status, attempt.detail)
+            forbidden = sorted(set(result.updates) - _UPDATABLE)
+            if forbidden:
+                context.record(agent.name, agent.action, FAILED,
+                               f"Tried to change {', '.join(forbidden)}, which agents may not set.", _elapsed(start))
+                return self._finish(context, agents[index + 1:], store, failed=True)
+            for key, value in result.updates.items():
+                setattr(context, key, value)
+            context.notes.update(result.notes)
+            context.record(agent.name, agent.action, result.status, result.detail, _elapsed(start))
+            self.log(f"[Manager] {agent.name}: {result.status} ({result.detail}).")
+            self._save(context, store)
+            if result.status == FAILED:
+                return self._finish(context, agents[index + 1:], store, failed=True)
+
+        return self._finish(context, [], store, failed=False)
+
+    def _finish(self, context: ProjectContext, remaining: list["Agent"], store: RunStore | None,
+                failed: bool) -> ProjectContext:
+        for agent in remaining:
+            context.record(agent.name, agent.action, SKIPPED, "Not reached: an earlier step failed")
+        context.status = FAILED if failed else COMPLETED
+        self._save(context, store)
+        return context
+
+    @staticmethod
+    def _save(context: ProjectContext, store: RunStore | None) -> None:
+        if store is not None:
+            store.save(context)
+
+
+def _elapsed(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 1)

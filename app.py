@@ -245,13 +245,14 @@ def about_page() -> None:
 for a multi-agent software engineering assistant. This is **Stage 1: a local prototype**. It is
 rule-based by default, with an optional experimental local AI planner.
 
-| Stage | Status | How it works today |
+| Agent | Status | How it works today |
 |---|---|---|
-| Plan | Available | Rule-based Manager and Planner (default), or an experimental local AI Planner |
-| Code | Not built yet | |
-| Review | Not built yet | |
-| Test | Not built yet | |
-| Deliver | Not built yet | |
+| Manager | Available | Rule-based: understands the requirement and coordinates the agents |
+| Planner | Available | Rule-based (default), or an experimental local AI Planner |
+| Developer | Not built yet | |
+| Reviewer | Not built yet | |
+| Tester | Not built yet | |
+| Documentation | Not built yet | |
 
 **What happens when you generate a plan**
 
