@@ -1,0 +1,134 @@
+"""Tests for books, members and loans storage. Uses a temporary in-memory database."""
+
+import unittest
+
+from library_api import store
+from library_api.db import connect
+
+BOOK = {"title": "Dune", "author": "Frank Herbert", "isbn": "978-0-441-17271-9", "copies": 2}
+MEMBER = {"name": "Asha Rao", "email": "asha@example.com"}
+
+
+class StoreTestCase(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+        self.addCleanup(self.conn.close)
+
+
+class BookTests(StoreTestCase):
+    def test_add_and_get_book(self):
+        book = store.add_book(self.conn, BOOK)
+        self.assertEqual(book["isbn"], "9780441172719")
+        self.assertEqual((book["copies"], book["available"]), (2, 2))
+        self.assertEqual(store.get_book(self.conn, book["id"]), book)
+        self.assertEqual(store.list_books(self.conn), [book])
+
+    def test_invalid_books_are_rejected(self):
+        bad = [
+            {**BOOK, "title": ""},
+            {**BOOK, "author": 42},
+            {**BOOK, "isbn": "12345"},
+            {**BOOK, "copies": -1},
+            {**BOOK, "copies": "3"},
+            {**BOOK, "copies": True},
+        ]
+        for data in bad:
+            with self.subTest(data=data), self.assertRaises(store.Invalid):
+                store.add_book(self.conn, data)
+
+    def test_ten_digit_isbn_with_x_is_accepted(self):
+        self.assertEqual(store.add_book(self.conn, {**BOOK, "isbn": "0-306-40615-X"})["isbn"], "030640615X")
+
+    def test_duplicate_isbn_is_a_conflict(self):
+        store.add_book(self.conn, BOOK)
+        with self.assertRaises(store.Conflict):
+            store.add_book(self.conn, {**BOOK, "title": "Another"})
+
+    def test_update_book(self):
+        book = store.add_book(self.conn, BOOK)
+        updated = store.update_book(self.conn, book["id"], {"copies": 5, "title": "Dune (Deluxe)"})
+        self.assertEqual((updated["copies"], updated["title"], updated["author"]), (5, "Dune (Deluxe)", "Frank Herbert"))
+        with self.assertRaises(store.Invalid):
+            store.update_book(self.conn, book["id"], {"colour": "blue"})
+
+    def test_missing_book(self):
+        with self.assertRaises(store.NotFound):
+            store.get_book(self.conn, 99)
+
+    def test_delete_book_without_loans(self):
+        book = store.add_book(self.conn, BOOK)
+        store.delete_book(self.conn, book["id"])
+        self.assertEqual(store.list_books(self.conn), [])
+
+
+class MemberTests(StoreTestCase):
+    def test_add_list_and_delete_member(self):
+        member = store.add_member(self.conn, MEMBER)
+        self.assertEqual(store.list_members(self.conn), [member])
+        store.delete_member(self.conn, member["id"])
+        self.assertEqual(store.list_members(self.conn), [])
+
+    def test_invalid_and_duplicate_members(self):
+        with self.assertRaises(store.Invalid):
+            store.add_member(self.conn, {**MEMBER, "email": "not-an-email"})
+        store.add_member(self.conn, MEMBER)
+        with self.assertRaises(store.Conflict):
+            store.add_member(self.conn, {**MEMBER, "email": "ASHA@example.com"})
+
+
+class LoanTests(StoreTestCase):
+    def setUp(self):
+        super().setUp()
+        self.book = store.add_book(self.conn, {**BOOK, "copies": 1})
+        self.member = store.add_member(self.conn, MEMBER)
+        self.request = {"book_id": self.book["id"], "member_id": self.member["id"]}
+
+    def test_borrow_and_return(self):
+        loan = store.borrow(self.conn, self.request)
+        self.assertIsNone(loan["returned_at"])
+        self.assertEqual(store.get_book(self.conn, self.book["id"])["available"], 0)
+        returned = store.return_loan(self.conn, loan["id"])
+        self.assertIsNotNone(returned["returned_at"])
+        self.assertEqual(store.get_book(self.conn, self.book["id"])["available"], 1)
+
+    def test_cannot_borrow_when_no_copies_left(self):
+        store.borrow(self.conn, self.request)
+        with self.assertRaisesRegex(store.Conflict, "No copies"):
+            store.borrow(self.conn, self.request)
+
+    def test_cannot_return_twice(self):
+        loan = store.borrow(self.conn, self.request)
+        store.return_loan(self.conn, loan["id"])
+        with self.assertRaises(store.Conflict):
+            store.return_loan(self.conn, loan["id"])
+
+    def test_borrow_needs_existing_book_and_member(self):
+        with self.assertRaises(store.NotFound):
+            store.borrow(self.conn, {"book_id": 99, "member_id": self.member["id"]})
+        with self.assertRaises(store.NotFound):
+            store.borrow(self.conn, {"book_id": self.book["id"], "member_id": 99})
+        with self.assertRaises(store.Invalid):
+            store.borrow(self.conn, {"book_id": "1", "member_id": self.member["id"]})
+
+    def test_open_loans_filter(self):
+        loan = store.borrow(self.conn, self.request)
+        self.assertEqual(len(store.list_loans(self.conn, open_only=True)), 1)
+        store.return_loan(self.conn, loan["id"])
+        self.assertEqual(store.list_loans(self.conn, open_only=True), [])
+        self.assertEqual(len(store.list_loans(self.conn)), 1)
+
+    def test_records_with_loan_history_cannot_be_deleted(self):
+        store.borrow(self.conn, self.request)
+        with self.assertRaises(store.Conflict):
+            store.delete_book(self.conn, self.book["id"])
+        with self.assertRaises(store.Conflict):
+            store.delete_member(self.conn, self.member["id"])
+
+    def test_copies_cannot_drop_below_books_on_loan(self):
+        store.borrow(self.conn, self.request)
+        with self.assertRaises(store.Conflict):
+            store.update_book(self.conn, self.book["id"], {"copies": 0})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -9,6 +9,7 @@ from string import Template
 
 import streamlit as st
 
+from aether.context import AgentEvent
 from aether.models import Plan, TaskBrief
 from aether.planner import RuleBasedPlanner
 from aether_ui.workflow import FEATURE_LABELS, Stage, step_origin
@@ -24,7 +25,6 @@ DARK = {
 
 # Agents planned for later stages of the project. Shown as "Not built yet".
 PLANNED_STAGES = [
-    ("Developer", "Generate project files"),
     ("Reviewer", "Review code"),
     ("Tester", "Write and run tests"),
     ("Documentation", "Write project documentation"),
@@ -72,6 +72,7 @@ h1, h2, h3 { letter-spacing: -0.015em; }
 .ae-dot.done { background: var(--ae-ok); border-color: var(--ae-ok); color: #fff; }
 .ae-dot.failed { background: var(--ae-fail); border-color: var(--ae-fail); color: #fff; }
 .ae-dot.planned { border-style: dashed; }
+.ae-dot.waiting { border-color: var(--ae-accent); color: var(--ae-accent); }
 .ae-stage-title { font-weight: 600; font-size: 0.9rem; }
 .ae-stage-agent { color: var(--ae-muted); font-weight: 500; }
 .ae-stage-detail { color: var(--ae-muted); font-size: 0.8rem; }
@@ -154,8 +155,8 @@ def hero() -> None:
     <div class="ae-hero">
       <div class="ae-tagline">Intelligence that engineers together.</div>
       <div class="ae-verbs">
-        <span class="on">Plan.</span><span>Code.</span><span>Review.</span><span>Test.</span><span>Deliver.</span>
-        <span class="note">Planning is available today. The other stages are not built yet.</span>
+        <span class="on">Plan.</span><span class="on">Code.</span><span>Review.</span><span>Test.</span><span>Deliver.</span>
+        <span class="note">Planning and project generation are available today. Review, testing and delivery are not built yet.</span>
       </div>
     </div>
     """)
@@ -177,6 +178,7 @@ def empty_state(title: str, text: str, show_flow: bool = False) -> None:
           <span><b>1</b>Manager analyses the requirement</span>
           <span><b>2</b>Hands a TaskBrief to the Planner</span>
           <span><b>3</b>Planner returns a phased plan</span>
+          <span><b>4</b>You approve it, the Developer writes the files</span>
         </div>"""
     st.html(f"""
     <div class="ae-empty">
@@ -186,8 +188,38 @@ def empty_state(title: str, text: str, show_flow: bool = False) -> None:
     """)
 
 
+ICONS = {"done": "&#10003;", "failed": "&#10005;", "skipped": "&ndash;", "waiting": "&#8230;"}
+
+
+def _planned_rows() -> list[str]:
+    return [f"""
+        <li class="ae-stage planned">
+          <div class="ae-dot planned"></div>
+          <div>
+            <div class="ae-stage-title"><span class="ae-stage-agent">{agent} &middot;</span> {title}<span class="ae-tag">Not built yet</span></div>
+          </div>
+        </li>""" for agent, title in PLANNED_STAGES]
+
+
+def events(run_events: list[AgentEvent]) -> None:
+    """The run's recorded activity log, in order, followed by the agents not built yet."""
+    rows = []
+    for event in run_events:
+        timing = f" &middot; {event.duration_ms / 1000:.1f} s" if event.duration_ms and event.duration_ms >= 1000 else ""
+        rows.append(f"""
+        <li class="ae-stage">
+          <div class="ae-dot {event.status}">{ICONS.get(event.status, "")}</div>
+          <div>
+            <div class="ae-stage-title"><span class="ae-stage-agent">{escape(event.agent)} &middot;</span> {escape(event.action)}</div>
+            <div class="ae-stage-detail">{escape(event.detail)}{timing}</div>
+          </div>
+        </li>""")
+    st.html(f'<ul class="ae-stages">{"".join(rows + _planned_rows())}</ul>')
+
+
 def stages(run_stages: list[Stage]) -> None:
-    icons = {"done": "&#10003;", "failed": "&#10005;", "skipped": "&ndash;"}
+    """Workflow stages for runs saved before the activity log existed."""
+    icons = ICONS
     rows = []
     for stage in run_stages:
         rows.append(f"""
@@ -198,15 +230,7 @@ def stages(run_stages: list[Stage]) -> None:
             <div class="ae-stage-detail">{escape(stage.detail)}</div>
           </div>
         </li>""")
-    for agent, title in PLANNED_STAGES:
-        rows.append(f"""
-        <li class="ae-stage planned">
-          <div class="ae-dot planned"></div>
-          <div>
-            <div class="ae-stage-title"><span class="ae-stage-agent">{agent} &middot;</span> {title}<span class="ae-tag">Not built yet</span></div>
-          </div>
-        </li>""")
-    st.html(f'<ul class="ae-stages">{"".join(rows)}</ul>')
+    st.html(f'<ul class="ae-stages">{"".join(rows + _planned_rows())}</ul>')
 
 
 def handoff(planner_name: str, brief: TaskBrief | None, plan: Plan | None) -> None:

@@ -1,0 +1,108 @@
+"""JSON request handling for the library API.
+
+Kept separate from the HTTP server (server.py) so every endpoint can be tested directly.
+handle() returns (status code, JSON-ready data). Errors are returned as {"error": "..."}.
+"""
+
+import json
+import re
+import sqlite3
+
+from library_api import store
+
+ENDPOINTS = [
+    "GET /books", "POST /books", "GET /books/{id}", "PUT /books/{id}", "DELETE /books/{id}",
+    "GET /members", "POST /members", "GET /members/{id}", "DELETE /members/{id}",
+    "GET /loans", "GET /loans?open=true", "POST /loans", "POST /loans/{id}/return",
+]
+BODY_HANDLERS = {"add_book", "update_book", "add_member", "borrow"}  # these read a JSON body
+
+
+class LibraryAPI:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        # path pattern -> {method: handler}
+        self.routes = [
+            (re.compile(r"/"), {"GET": self.index}),
+            (re.compile(r"/books"), {"GET": self.books, "POST": self.add_book}),
+            (re.compile(r"/books/(\d+)"), {"GET": self.book, "PUT": self.update_book, "DELETE": self.delete_book}),
+            (re.compile(r"/members"), {"GET": self.members, "POST": self.add_member}),
+            (re.compile(r"/members/(\d+)"), {"GET": self.member, "DELETE": self.delete_member}),
+            (re.compile(r"/loans"), {"GET": self.loans, "POST": self.borrow}),
+            (re.compile(r"/loans/(\d+)/return"), {"POST": self.return_loan}),
+        ]
+
+    def handle(self, method: str, path: str, body: bytes = b"") -> tuple[int, object]:
+        path, _, query = path.partition("?")
+        for pattern, handlers in self.routes:
+            match = pattern.fullmatch(path)
+            if not match:
+                continue
+            handler = handlers.get(method)
+            if handler is None:
+                return 405, {"error": f"{method} is not allowed here. Allowed: {', '.join(handlers)}."}
+            try:
+                args = [int(group) for group in match.groups()]
+                if handler.__name__ in BODY_HANDLERS:
+                    args.append(self.parse_json(body))
+                if handler.__name__ == "loans":
+                    args.append(query)
+                return handler(*args)
+            except store.Invalid as error:
+                return 400, {"error": str(error)}
+            except store.NotFound as error:
+                return 404, {"error": str(error)}
+            except store.Conflict as error:
+                return 409, {"error": str(error)}
+        return 404, {"error": f"No endpoint at {path}."}
+
+    @staticmethod
+    def parse_json(body: bytes) -> dict:
+        try:
+            data = json.loads(body.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise store.Invalid("The request body must be valid JSON.") from None
+        if not isinstance(data, dict):
+            raise store.Invalid("The request body must be a JSON object.")
+        return data
+
+    def index(self):
+        return 200, {"name": "Library API", "endpoints": ENDPOINTS}
+
+    def books(self):
+        return 200, store.list_books(self.conn)
+
+    def add_book(self, data):
+        return 201, store.add_book(self.conn, data)
+
+    def book(self, book_id):
+        return 200, store.get_book(self.conn, book_id)
+
+    def update_book(self, book_id, data):
+        return 200, store.update_book(self.conn, book_id, data)
+
+    def delete_book(self, book_id):
+        store.delete_book(self.conn, book_id)
+        return 204, None
+
+    def members(self):
+        return 200, store.list_members(self.conn)
+
+    def add_member(self, data):
+        return 201, store.add_member(self.conn, data)
+
+    def member(self, member_id):
+        return 200, store.get_member(self.conn, member_id)
+
+    def delete_member(self, member_id):
+        store.delete_member(self.conn, member_id)
+        return 204, None
+
+    def loans(self, query):
+        return 200, store.list_loans(self.conn, open_only="open=true" in query.split("&"))
+
+    def borrow(self, data):
+        return 201, store.borrow(self.conn, data)
+
+    def return_loan(self, loan_id):
+        return 200, store.return_loan(self.conn, loan_id)

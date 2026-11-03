@@ -1,0 +1,62 @@
+"""Tests for accounts, password hashing and sessions. Uses a temporary in-memory database."""
+
+import unittest
+
+from todo_app import auth
+from todo_app.db import connect
+
+
+class PasswordHashingTests(unittest.TestCase):
+    def test_hash_is_salted_and_verifiable(self):
+        first_hash, first_salt = auth.hash_password("correct horse")
+        second_hash, second_salt = auth.hash_password("correct horse")
+        self.assertNotEqual(first_salt, second_salt)
+        self.assertNotEqual(first_hash, second_hash)
+        self.assertTrue(auth.verify_password("correct horse", first_hash, first_salt))
+        self.assertFalse(auth.verify_password("wrong horse", first_hash, first_salt))
+
+    def test_same_salt_gives_same_hash(self):
+        salt = bytes(16)
+        self.assertEqual(auth.hash_password("secret123", salt), auth.hash_password("secret123", salt))
+
+
+class AccountTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+        self.addCleanup(self.conn.close)
+
+    def test_register_stores_hash_not_password(self):
+        user_id = auth.register(self.conn, "alice", "s3cret-pass")
+        row = self.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        self.assertEqual(row["username"], "alice")
+        self.assertNotIn("s3cret-pass", tuple(row))
+        self.assertEqual(len(row["password_hash"]), 64)
+
+    def test_login_with_right_and_wrong_password(self):
+        user_id = auth.register(self.conn, "alice", "s3cret-pass")
+        self.assertEqual(auth.authenticate(self.conn, "alice", "s3cret-pass"), user_id)
+        self.assertIsNone(auth.authenticate(self.conn, "alice", "wrong-pass"))
+        self.assertIsNone(auth.authenticate(self.conn, "nobody", "s3cret-pass"))
+
+    def test_usernames_are_unique_ignoring_case(self):
+        auth.register(self.conn, "alice", "s3cret-pass")
+        with self.assertRaisesRegex(auth.AuthError, "taken"):
+            auth.register(self.conn, "ALICE", "another-pass")
+
+    def test_invalid_usernames_and_short_passwords_are_rejected(self):
+        for username, password in [("ab", "long-enough"), ("bad name", "long-enough"), ("bob", "short")]:
+            with self.subTest(username=username), self.assertRaises(auth.AuthError):
+                auth.register(self.conn, username, password)
+
+    def test_sessions_identify_the_user_until_logout(self):
+        user_id = auth.register(self.conn, "alice", "s3cret-pass")
+        token = auth.create_session(self.conn, user_id)
+        self.assertEqual(auth.user_for_session(self.conn, token)["username"], "alice")
+        auth.end_session(self.conn, token)
+        self.assertIsNone(auth.user_for_session(self.conn, token))
+        self.assertIsNone(auth.user_for_session(self.conn, None))
+        self.assertIsNone(auth.user_for_session(self.conn, "made-up-token"))
+
+
+if __name__ == "__main__":
+    unittest.main()

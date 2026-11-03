@@ -2,7 +2,8 @@
 
 Agents never call each other. The Manager passes a ProjectContext to each agent in turn,
 applies what the agent returns, and records an AgentEvent for everything that really happened.
-Runs are saved on this computer under .aether/runs/<run_id>/ (set AETHER_RUNS_DIR to change it).
+Runs are saved on this computer in ~/AETHER-projects/<run_id>/ (set AETHER_RUNS_DIR to change it).
+Generated projects are never written inside AETHER's own source folder.
 """
 
 import json
@@ -15,11 +16,14 @@ from pathlib import Path
 from aether.models import Plan, PlanStep, TaskBrief
 
 # Event statuses.
-STARTED, DONE, FAILED, SKIPPED = "started", "done", "failed", "skipped"
+STARTED, DONE, FAILED, SKIPPED, WAITING = "started", "done", "failed", "skipped", "waiting"
 # Run statuses.
-RUNNING, COMPLETED = "running", "completed"
+RUNNING, COMPLETED, AWAITING_APPROVAL, CANCELLED = "running", "completed", "awaiting_approval", "cancelled"
+# Approval decisions.
+APPROVED, REJECTED = "approved", "rejected"
 
-DEFAULT_RUNS_DIR = Path(__file__).resolve().parent.parent / ".aether" / "runs"
+SOURCE_ROOT = Path(__file__).resolve().parent.parent  # AETHER's own code
+DEFAULT_RUNS_DIR = Path.home() / "AETHER-projects"
 
 
 def now() -> str:
@@ -46,6 +50,7 @@ class FileRecord:
     author: str
     sha256: str
     size: int
+    covers: list[int] = field(default_factory=list)  # plan step numbers this file carries out
 
 
 @dataclass
@@ -66,6 +71,7 @@ class ProjectContext:
     status: str = RUNNING
     brief: TaskBrief | None = None
     plan: Plan | None = None
+    project_type: str | None = None  # the Developer's template key, e.g. "todo_web"
     files: list[FileRecord] = field(default_factory=list)
     approvals: list[Approval] = field(default_factory=list)
     events: list[AgentEvent] = field(default_factory=list)
@@ -98,6 +104,7 @@ class ProjectContext:
             status=data.get("status", RUNNING),
             brief=TaskBrief(**data["brief"]) if data.get("brief") else None,
             plan=plan,
+            project_type=data.get("project_type"),
             files=[FileRecord(**f) for f in data.get("files", [])],
             approvals=[Approval(**a) for a in data.get("approvals", [])],
             events=[AgentEvent(**e) for e in data.get("events", [])],
@@ -110,6 +117,9 @@ class RunStore:
 
     def __init__(self, root: Path | None = None):
         self.root = Path(root or os.environ.get("AETHER_RUNS_DIR", DEFAULT_RUNS_DIR))
+        if self.root.resolve().is_relative_to(SOURCE_ROOT):
+            raise ValueError(f"Runs cannot be stored inside AETHER's own folder ({SOURCE_ROOT}). "
+                             "Choose a folder outside it.")
 
     def run_dir(self, run_id: str) -> Path:
         if not run_id.isalnum():

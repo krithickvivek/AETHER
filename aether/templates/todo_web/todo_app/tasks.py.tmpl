@@ -1,0 +1,41 @@
+"""Task storage. Every query is limited to the owner's tasks."""
+
+import sqlite3
+
+MAX_TITLE_LENGTH = 200
+
+
+class TaskError(ValueError):
+    """A task could not be saved."""
+
+
+def add_task(conn: sqlite3.Connection, user_id: int, title: str) -> int:
+    title = " ".join(title.split())
+    if not title:
+        raise TaskError("A task needs a title.")
+    if len(title) > MAX_TITLE_LENGTH:
+        raise TaskError(f"Task titles can be at most {MAX_TITLE_LENGTH} characters.")
+    cursor = conn.execute("INSERT INTO tasks (user_id, title) VALUES (?, ?)", (user_id, title))
+    conn.commit()
+    return cursor.lastrowid
+
+
+def list_tasks(conn: sqlite3.Connection, user_id: int) -> list[sqlite3.Row]:
+    """The user's tasks: open tasks first, then completed ones, oldest first."""
+    return conn.execute(
+        "SELECT id, title, done, created_at FROM tasks WHERE user_id = ? ORDER BY done, id", (user_id,)
+    ).fetchall()
+
+
+def toggle_task(conn: sqlite3.Connection, user_id: int, task_id: int) -> bool:
+    """Mark a task done or not done. Returns False if the user has no such task."""
+    cursor = conn.execute("UPDATE tasks SET done = 1 - done WHERE id = ? AND user_id = ?", (task_id, user_id))
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def delete_task(conn: sqlite3.Connection, user_id: int, task_id: int) -> bool:
+    """Delete a task. Returns False if the user has no such task."""
+    cursor = conn.execute("DELETE FROM tasks WHERE id = ? AND user_id = ?", (task_id, user_id))
+    conn.commit()
+    return cursor.rowcount == 1

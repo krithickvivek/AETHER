@@ -1,0 +1,82 @@
+"""Tests for the JSON endpoints, without starting a server. Uses an in-memory database."""
+
+import json
+import unittest
+
+from library_api.api import LibraryAPI
+from library_api.db import connect
+
+BOOK = {"title": "Dune", "author": "Frank Herbert", "isbn": "9780441172719", "copies": 1}
+MEMBER = {"name": "Asha Rao", "email": "asha@example.com"}
+
+
+class LibraryAPITests(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.api = LibraryAPI(self.conn)
+
+    def call(self, method, path, data=None):
+        body = json.dumps(data).encode("utf-8") if data is not None else b""
+        return self.api.handle(method, path, body)
+
+    def test_index_lists_endpoints(self):
+        status, data = self.call("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("POST /loans", data["endpoints"])
+
+    def test_create_read_update_delete_book(self):
+        status, book = self.call("POST", "/books", BOOK)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call("GET", f"/books/{book['id']}"), (200, book))
+        self.assertEqual(self.call("GET", "/books"), (200, [book]))
+        status, updated = self.call("PUT", f"/books/{book['id']}", {"copies": 3})
+        self.assertEqual((status, updated["copies"]), (200, 3))
+        self.assertEqual(self.call("DELETE", f"/books/{book['id']}"), (204, None))
+        self.assertEqual(self.call("GET", f"/books/{book['id']}")[0], 404)
+
+    def test_members(self):
+        status, member = self.call("POST", "/members", MEMBER)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call("GET", "/members"), (200, [member]))
+        self.assertEqual(self.call("GET", f"/members/{member['id']}"), (200, member))
+
+    def test_borrow_and_return_flow(self):
+        _, book = self.call("POST", "/books", BOOK)
+        _, member = self.call("POST", "/members", MEMBER)
+        request = {"book_id": book["id"], "member_id": member["id"]}
+
+        status, loan = self.call("POST", "/loans", request)
+        self.assertEqual(status, 201)
+        self.assertEqual(self.call("POST", "/loans", request)[0], 409)  # no copies left
+        self.assertEqual(len(self.call("GET", "/loans?open=true")[1]), 1)
+
+        status, returned = self.call("POST", f"/loans/{loan['id']}/return")
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(returned["returned_at"])
+        self.assertEqual(self.call("GET", "/loans?open=true"), (200, []))
+        self.assertEqual(self.call("POST", f"/loans/{loan['id']}/return")[0], 409)
+
+    def test_validation_errors_are_400_with_a_message(self):
+        status, data = self.call("POST", "/books", {**BOOK, "isbn": "nope"})
+        self.assertEqual(status, 400)
+        self.assertIn("isbn", data["error"])
+
+    def test_bad_json_is_400(self):
+        self.assertEqual(self.api.handle("POST", "/books", b"{not json")[0], 400)
+        self.assertEqual(self.api.handle("POST", "/books", b"[1, 2]")[0], 400)
+
+    def test_unknown_paths_and_methods(self):
+        self.assertEqual(self.call("GET", "/authors")[0], 404)
+        status, data = self.call("PATCH", "/books")
+        self.assertEqual(status, 405)
+        self.assertIn("Allowed", data["error"])
+
+    def test_responses_are_json_serialisable(self):
+        _, book = self.call("POST", "/books", BOOK)
+        json.dumps(self.call("GET", "/books")[1])
+        json.dumps(book)
+
+
+if __name__ == "__main__":
+    unittest.main()

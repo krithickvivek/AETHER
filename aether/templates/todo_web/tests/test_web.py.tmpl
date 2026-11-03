@@ -1,0 +1,101 @@
+"""Tests for the web pages and forms, without starting a server. Uses an in-memory database."""
+
+import unittest
+from urllib.parse import urlencode
+
+from todo_app.db import connect
+from todo_app.web import SESSION_COOKIE, TodoApp
+
+
+def form(**fields) -> bytes:
+    return urlencode(fields).encode("utf-8")
+
+
+class WebAppTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.app = TodoApp(self.conn)
+
+    def sign_up(self, username="alice", password="s3cret-pass") -> str:
+        """Register through the form and return the session cookie header to send next."""
+        response = self.app.handle("POST", "/register", form(username=username, password=password))
+        self.assertEqual(response.status, 303)
+        cookie = dict(response.headers)["Set-Cookie"]
+        return cookie.split(";", 1)[0]
+
+    def test_home_redirects_to_login_when_signed_out(self):
+        response = self.app.handle("GET", "/")
+        self.assertEqual((response.status, dict(response.headers)["Location"]), (303, "/login"))
+
+    def test_task_page_needs_login(self):
+        self.assertEqual(dict(self.app.handle("GET", "/tasks").headers)["Location"], "/login")
+
+    def test_register_sets_a_secure_session_cookie(self):
+        response = self.app.handle("POST", "/register", form(username="alice", password="s3cret-pass"))
+        cookie = dict(response.headers)["Set-Cookie"]
+        self.assertTrue(cookie.startswith(SESSION_COOKIE + "="))
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+
+    def test_register_errors_are_shown(self):
+        response = self.app.handle("POST", "/register", form(username="al", password="s3cret-pass"))
+        self.assertEqual(response.status, 400)
+        self.assertIn("3 to 30", response.body)
+
+    def test_add_and_complete_a_task(self):
+        cookie = self.sign_up()
+        self.assertEqual(self.app.handle("POST", "/tasks", form(title="Buy milk"), cookie).status, 303)
+        page = self.app.handle("GET", "/tasks", cookie_header=cookie)
+        self.assertEqual(page.status, 200)
+        self.assertIn("Buy milk", page.body)
+        self.assertIn("Signed in as <b>alice</b>", page.body)
+        self.assertEqual(self.app.handle("POST", "/tasks/1/toggle", cookie_header=cookie).status, 303)
+        self.assertIn('class="done"', self.app.handle("GET", "/tasks", cookie_header=cookie).body)
+
+    def test_task_titles_are_escaped(self):
+        cookie = self.sign_up()
+        self.app.handle("POST", "/tasks", form(title="<script>alert(1)</script>"), cookie)
+        body = self.app.handle("GET", "/tasks", cookie_header=cookie).body
+        self.assertNotIn("<script>alert(1)</script>", body)
+        self.assertIn("&lt;script&gt;", body)
+
+    def test_empty_task_shows_an_error(self):
+        cookie = self.sign_up()
+        response = self.app.handle("POST", "/tasks", form(title="  "), cookie)
+        self.assertEqual(response.status, 400)
+        self.assertIn("needs a title", response.body)
+
+    def test_users_cannot_touch_other_users_tasks(self):
+        alice = self.sign_up("alice")
+        self.app.handle("POST", "/tasks", form(title="Alice's task"), alice)
+        bob = self.sign_up("bob")
+        self.assertEqual(self.app.handle("POST", "/tasks/1/delete", cookie_header=bob).status, 404)
+        self.assertIn("Alice&#x27;s task", self.app.handle("GET", "/tasks", cookie_header=alice).body)
+
+    def test_login_logout(self):
+        self.sign_up()
+        wrong = self.app.handle("POST", "/login", form(username="alice", password="nope-nope"))
+        self.assertEqual(wrong.status, 401)
+        self.assertIn("Wrong username or password", wrong.body)
+
+        right = self.app.handle("POST", "/login", form(username="alice", password="s3cret-pass"))
+        cookie = dict(right.headers)["Set-Cookie"].split(";", 1)[0]
+        self.assertEqual(self.app.handle("GET", "/tasks", cookie_header=cookie).status, 200)
+
+        logout = self.app.handle("POST", "/logout", cookie_header=cookie)
+        self.assertIn("Max-Age=0", dict(logout.headers)["Set-Cookie"])
+        self.assertEqual(self.app.handle("GET", "/tasks", cookie_header=cookie).status, 303)
+
+    def test_unknown_pages_and_methods(self):
+        self.assertEqual(self.app.handle("GET", "/nowhere").status, 404)
+        self.assertEqual(self.app.handle("PUT", "/tasks").status, 405)
+
+    def test_stylesheet_is_served(self):
+        response = self.app.handle("GET", "/static/style.css")
+        self.assertEqual(response.status, 200)
+        self.assertTrue(response.content_type.startswith("text/css"))
+
+
+if __name__ == "__main__":
+    unittest.main()

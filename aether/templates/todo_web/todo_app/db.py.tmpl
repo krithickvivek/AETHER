@@ -1,0 +1,20 @@
+"""SQLite connection and database setup."""
+
+import sqlite3
+from pathlib import Path
+
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+
+
+def connect(path: str = "todo.db") -> sqlite3.Connection:
+    """Open the database (":memory:" for a temporary one) and make sure the tables exist."""
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    init_db(conn)
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+    conn.commit()

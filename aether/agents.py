@@ -33,6 +33,17 @@ class AgentResult:
 class Agent(ABC):
     name = "Agent"       # role shown in the activity log, e.g. "Planner"
     action = "Work"      # what the agent does, e.g. "Build development plan"
+    checkpoint: str | None = None   # if set, the Manager waits for the user's approval before running it
+    checkpoint_title = ""
+
+    @property
+    def handoff_label(self) -> str:
+        """Name used in the Manager's log when handing off to this agent."""
+        return self.name
+
+    def preview(self, context: ProjectContext) -> str:
+        """Short description of what the agent will do, shown at its checkpoint."""
+        return ""
 
     @abstractmethod
     def run(self, context: ProjectContext) -> AgentResult:
@@ -47,6 +58,10 @@ class PlannerAgent(Agent):
 
     def __init__(self, planner: Planner):
         self.planner = planner
+
+    @property
+    def handoff_label(self) -> str:
+        return self.planner.name
 
     def run(self, context: ProjectContext) -> AgentResult:
         if context.brief is None:

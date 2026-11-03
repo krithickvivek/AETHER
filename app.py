@@ -11,11 +11,16 @@ from datetime import datetime
 
 import streamlit as st
 
+import hashlib
+
 from aether.config import build_planner, planner_setting
+from aether.context import AWAITING_APPROVAL, CANCELLED, COMPLETED, ProjectContext, RunStore
+from aether.developer import preview
 from aether.ollama_planner import DEFAULT_MODEL, ollama_status
+from aether.workspace import Workspace
 from aether_ui import history, theme
 from aether_ui.workflow import (
-    FEATURE_LABELS, RunResult, format_duration, group_by_phase, plan_to_markdown, run_workflow,
+    FEATURE_LABELS, RunResult, decide_plan, format_duration, group_by_phase, plan_to_markdown, start_project,
 )
 
 PLANNER_LABELS = {
@@ -73,15 +78,30 @@ def render_planner_choice() -> str:
     return choice
 
 
+LANGUAGES = {"py": "python", "sql": "sql", "md": "markdown", "css": "css", "html": "html", "json": "json"}
+
+
+def run_store() -> RunStore | None:
+    """Where runs and generated projects are saved (outside AETHER's own folder)."""
+    try:
+        return RunStore()
+    except ValueError as error:
+        st.error(f"Generated projects cannot be saved: {error}", icon=":material/error:")
+        return None
+
+
 def generate(choice: str) -> None:
-    """Run the real workflow once and remember the result."""
+    """Run the real workflow up to Checkpoint A and remember the result."""
     if choice == "ollama":
         message = f"The local model ({DEFAULT_MODEL}) is writing the plan. This can take a few minutes..."
     else:
         message = "Running Manager and Planner..."
+    store = run_store()
     with st.spinner(message):
-        result = run_workflow(st.session_state.get("requirement", ""), planner=build_planner(choice))
+        result, context = start_project(st.session_state.get("requirement", ""), planner=build_planner(choice),
+                                        store=store)
     st.session_state["result"] = result
+    st.session_state["context"] = context if store else None
     st.session_state["result_source"] = "live"
     if result.ok:
         try:
@@ -160,10 +180,14 @@ def render_result(result: RunResult) -> None:
 
     flow_col, plan_col = st.columns([5, 7], gap="large")
     planner_name = result.stages[-1].agent
+    context: ProjectContext | None = st.session_state.get("context")
 
     with flow_col:
         theme.label("Workflow")
-        theme.stages(result.stages)
+        if context is not None:
+            theme.events(context.events)  # the run's real activity log, including approvals
+        else:
+            theme.stages(result.stages)  # runs saved before the activity log existed
 
         theme.label("Handoff")
         theme.handoff(planner_name, result.brief, result.plan)
@@ -183,6 +207,94 @@ def render_result(result: RunResult) -> None:
         theme.label("Detected features")
         theme.feature_chips(result.brief.features)
         render_plan_explorer(result)
+
+    if context is not None and context.plan is not None:
+        render_development(context)
+
+
+def render_development(context: ProjectContext) -> None:
+    """Checkpoint A before generation, then the files the Developer actually wrote."""
+    st.divider()
+    if context.status == AWAITING_APPROVAL:
+        render_checkpoint(context)
+    elif context.status == CANCELLED:
+        theme.label("Checkpoint A")
+        st.info("You rejected this plan, so no project files were generated. Generate a new plan to try again.",
+                icon=":material/block:")
+    elif context.files:
+        render_files(context)
+    else:
+        failure = next((e for e in reversed(context.events) if e.agent == "Developer"), None)
+        if failure is not None:
+            theme.label("Project files")
+            st.error(f"The Developer could not generate this project. {failure.detail}", icon=":material/error:")
+
+
+def render_checkpoint(context: ProjectContext) -> None:
+    plan_preview = preview(context)
+    template = plan_preview.template
+    store = run_store()
+    theme.label("Checkpoint A · Approve the plan")
+    if template is None:
+        st.warning(f"{plan_preview.choice.reason} The Developer only writes projects from tested templates, "
+                   "so it cannot build this one yet.", icon=":material/report:")
+    else:
+        st.markdown(f"**{template.title}** · {template.kind}  \n{template.description}")
+        if plan_preview.choice.unsupported:
+            missing = ", ".join(FEATURE_LABELS.get(f, f) for f in plan_preview.choice.unsupported)
+            st.warning(f"This template does not include: {missing}. Those parts of the plan will not be built.",
+                       icon=":material/report:")
+        if plan_preview.uncovered_steps:
+            steps = ", ".join(map(str, plan_preview.uncovered_steps))
+            st.warning(f"No generated file carries out plan step(s) {steps}.", icon=":material/report:")
+        rows = [{"File": path, "Plan steps": ", ".join(map(str, plan_preview.covers.get(path, []))) or "-"}
+                for path in plan_preview.files]
+        st.dataframe(rows, hide_index=True, width="stretch")
+        if store is not None:
+            st.caption(f"{len(plan_preview.files)} files will be written to {store.workspace_dir(context.run_id)}. "
+                       "Generated code is not run.")
+
+    approve_col, reject_col, _ = st.columns([2, 2, 3])
+    if approve_col.button("Approve and generate files", key="approve_plan", type="primary",
+                          disabled=template is None or store is None, icon=":material/check:", width="stretch"):
+        with st.spinner("Developer is writing the project files..."):
+            st.session_state["context"] = decide_plan(context, approved=True, store=store)
+        st.rerun()
+    if reject_col.button("Reject plan", key="reject_plan", disabled=store is None, icon=":material/close:",
+                         width="stretch"):
+        st.session_state["context"] = decide_plan(context, approved=False, store=store, note="Rejected in the web app")
+        st.rerun()
+
+
+def render_files(context: ProjectContext) -> None:
+    store = run_store()
+    if store is None:
+        return
+    workspace = Workspace(store.workspace_dir(context.run_id))
+    developer = next((e for e in reversed(context.events) if e.agent == "Developer"), None)
+    theme.label("Project files")
+    if context.status == COMPLETED and developer is not None:
+        st.success(f"The Developer generated {developer.detail.split(';', 1)[0]}.", icon=":material/folder_code:")
+    for note in ("developer_unsupported", "developer_uncovered_steps"):
+        if context.notes.get(note):
+            label = "Not covered by the template" if note == "developer_unsupported" else "Plan steps without a file"
+            st.warning(f"{label}: {context.notes[note]}", icon=":material/report:")
+    st.caption(f"Saved in {workspace.root}. Generated code has not been run, reviewed or tested yet.")
+
+    by_path = {record.path: record for record in context.files}
+    choice = st.selectbox("File", sorted(by_path), key="file_choice",
+                          format_func=lambda path: f"{path}  ·  {by_path[path].size:,} bytes")
+    record = by_path[choice]
+    covers = ", ".join(map(str, record.covers)) or "none"
+    st.caption(f"Written by {record.author} · carries out plan steps {covers} · SHA-256 {record.sha256[:16]}…")
+    try:
+        text = workspace.read_text(choice)
+    except OSError:
+        st.error("This file is no longer on disk.", icon=":material/error:")
+        return
+    if hashlib.sha256(text.encode("utf-8")).hexdigest() != record.sha256:
+        st.warning("This file has changed since the Developer wrote it.", icon=":material/report:")
+    st.code(text or "(empty file)", language=LANGUAGES.get(choice.rsplit(".", 1)[-1]), line_numbers=True)
 
 
 def render_plan_explorer(result: RunResult) -> None:
@@ -230,9 +342,20 @@ def history_page() -> None:
                 theme.history_row(result.requirement, meta)
             if button_col.button("Open", key=f"open-{entry['id']}", width="stretch"):
                 st.session_state["result"] = result
+                st.session_state["context"] = load_context(result.run_id)
                 st.session_state["result_source"] = "history"
                 st.session_state["requirement"] = result.requirement
                 st.switch_page(WORKSPACE)
+
+
+def load_context(run_id: str | None) -> ProjectContext | None:
+    """The saved run behind a history entry (events, approval, files), if it still exists."""
+    if not run_id:
+        return None
+    try:
+        return RunStore().load(run_id)
+    except (OSError, ValueError, KeyError):
+        return None
 
 
 # ---------------------------------------------------------------------- about
@@ -249,7 +372,7 @@ rule-based by default, with an optional experimental local AI planner.
 |---|---|---|
 | Manager | Available | Rule-based: understands the requirement and coordinates the agents |
 | Planner | Available | Rule-based (default), or an experimental local AI Planner |
-| Developer | Not built yet | |
+| Developer | Available | Writes project files from tested templates (calculator, to-do web app, library API) after you approve the plan |
 | Reviewer | Not built yet | |
 | Tester | Not built yet | |
 | Documentation | Not built yet | |
@@ -259,6 +382,10 @@ rule-based by default, with an optional experimental local AI planner.
 1. The **ManagerAgent** cleans up the requirement and detects features (login, storage, web interface, API) by matching keywords.
 2. It hands a **TaskBrief** to the **RuleBasedPlanner**.
 3. The Planner combines core steps with extra steps for each detected feature, ordered by phase.
+4. **Checkpoint A:** the run pauses. You see the project type and the files the Developer would write, then approve or reject the plan.
+5. After approval, the **DeveloperAgent** copies a tested template into a new project folder outside AETHER
+   (`~/AETHER-projects/<run id>/workspace`) and records each file's checksum and the plan steps it carries out.
+   The Developer never asks an AI model to write code, and generated code is not run.
 
 With the default rule-based planner, no AI model is used, and each step in the plan explorer is tagged
 with the rule that added it, so every result can be explained.

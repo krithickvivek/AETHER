@@ -295,7 +295,7 @@ def quality_problems(steps: list[PlanStep], dropped: int, given: int, brief: Tas
 
     missing, not_built, thin = [], [], []
     for feature in brief.features:
-        mentions = [s for s in steps if _mentions_feature(feature, s)]
+        mentions = [s for s in steps if mentions_feature(feature, s)]
         if not mentions:
             missing.append(feature)
         elif not any(_builds_feature(feature, s) for s in mentions):
@@ -348,7 +348,7 @@ def _duplicate(a: PlanStep, b: PlanStep) -> bool:
     return len(words_a & words_b) / len(words_a | words_b) >= WORD_OVERLAP
 
 
-def _mentions_feature(feature: str, step: PlanStep) -> bool:
+def mentions_feature(feature: str, step: PlanStep) -> bool:
     keywords = FEATURE_KEYWORDS.get(feature, []) + EXTRA_KEYWORDS.get(feature, [])
     text = step.description.lower()
     return any(re.search(rf"\b{re.escape(kw)}\b", text) for kw in keywords)
@@ -356,7 +356,7 @@ def _mentions_feature(feature: str, step: PlanStep) -> bool:
 
 def _builds_feature(feature: str, step: PlanStep) -> bool:
     """True only for an Implementation step that performs a build action on the feature."""
-    return (step.phase == "Implementation" and _mentions_feature(feature, step)
+    return (step.phase == "Implementation" and mentions_feature(feature, step)
             and bool(_key_words(step.description) & BUILD_VERB_STEMS))
 
 

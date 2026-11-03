@@ -1,0 +1,73 @@
+"""Run the library API on this computer.
+
+    python server.py
+
+The API listens on http://127.0.0.1:8000 and speaks JSON. Press Ctrl+C to stop.
+Data is saved in library.db next to this file.
+"""
+
+import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+from library_api.api import LibraryAPI
+from library_api.db import connect
+
+HOST, PORT = "127.0.0.1", 8000   # this computer only
+MAX_BODY_BYTES = 100_000
+DATABASE = Path(__file__).with_name("library.db")
+
+
+def make_handler(api: LibraryAPI) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.respond("GET")
+
+        def do_POST(self):
+            self.respond("POST")
+
+        def do_PUT(self):
+            self.respond("PUT")
+
+        def do_DELETE(self):
+            self.respond("DELETE")
+
+        def respond(self, method: str) -> None:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self.send_json(400, {"error": "Invalid Content-Length header."})
+                return
+            if length < 0 or length > MAX_BODY_BYTES:
+                self.send_json(413, {"error": "Request body is too large."})
+                return
+            body = self.rfile.read(length) if length else b""
+            status, data = api.handle(method, self.path, body)
+            self.send_json(status, data)
+
+        def send_json(self, status: int, data) -> None:
+            payload = b"" if data is None else json.dumps(data, indent=2).encode("utf-8")
+            self.send_response(status)
+            if payload:
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    return Handler
+
+
+def main() -> None:
+    api = LibraryAPI(connect(str(DATABASE)))
+    server = HTTPServer((HOST, PORT), make_handler(api))
+    print(f"Library API running at http://{HOST}:{PORT} (press Ctrl+C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

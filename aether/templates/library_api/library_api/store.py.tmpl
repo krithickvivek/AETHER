@@ -1,0 +1,194 @@
+"""Library data: books, members and loans, with validation.
+
+Raises Invalid (bad input), NotFound (no such record) or Conflict (the action breaks a rule,
+such as borrowing a book with no copies left). Every query uses parameters, never string formatting.
+"""
+
+import re
+import sqlite3
+
+MAX_TEXT_LENGTH = 200
+MAX_COPIES = 1000
+EMAIL_PATTERN = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+BOOK_QUERY = """
+    SELECT books.id, books.title, books.author, books.isbn, books.copies,
+           books.copies - (SELECT COUNT(*) FROM loans
+                           WHERE loans.book_id = books.id AND loans.returned_at IS NULL) AS available
+    FROM books
+"""
+
+
+class Invalid(ValueError):
+    """The request data is missing or not valid."""
+
+
+class NotFound(LookupError):
+    """The requested record does not exist."""
+
+
+class Conflict(ValueError):
+    """The action is not allowed in the current state."""
+
+
+# ------------------------------------------------------------------ validation
+
+def text_field(data: dict, key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise Invalid(f"'{key}' is required and must be text.")
+    value = " ".join(value.split())
+    if len(value) > MAX_TEXT_LENGTH:
+        raise Invalid(f"'{key}' can be at most {MAX_TEXT_LENGTH} characters.")
+    return value
+
+
+def isbn_field(data: dict) -> str:
+    isbn = text_field(data, "isbn").replace("-", "").replace(" ", "").upper()
+    valid = (len(isbn) == 13 and isbn.isdigit()) or (len(isbn) == 10 and isbn[:9].isdigit()
+                                                      and (isbn[9].isdigit() or isbn[9] == "X"))
+    if not valid:
+        raise Invalid("'isbn' must have 10 or 13 digits (hyphens allowed).")
+    return isbn
+
+
+def copies_field(data: dict) -> int:
+    value = data.get("copies", 1)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_COPIES:
+        raise Invalid(f"'copies' must be a whole number from 0 to {MAX_COPIES}.")
+    return value
+
+
+def id_field(data: dict, key: str) -> int:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise Invalid(f"'{key}' must be a positive whole number.")
+    return value
+
+
+# ----------------------------------------------------------------------- books
+
+def book_dict(row: sqlite3.Row) -> dict:
+    return {key: row[key] for key in ("id", "title", "author", "isbn", "copies", "available")}
+
+
+def list_books(conn: sqlite3.Connection) -> list[dict]:
+    return [book_dict(row) for row in conn.execute(BOOK_QUERY + " ORDER BY books.title, books.id")]
+
+
+def get_book(conn: sqlite3.Connection, book_id: int) -> dict:
+    row = conn.execute(BOOK_QUERY + " WHERE books.id = ?", (book_id,)).fetchone()
+    if row is None:
+        raise NotFound(f"Book {book_id} does not exist.")
+    return book_dict(row)
+
+
+def add_book(conn: sqlite3.Connection, data: dict) -> dict:
+    values = (text_field(data, "title"), text_field(data, "author"), isbn_field(data), copies_field(data))
+    try:
+        cursor = conn.execute("INSERT INTO books (title, author, isbn, copies) VALUES (?, ?, ?, ?)", values)
+    except sqlite3.IntegrityError:
+        raise Conflict("A book with this ISBN already exists.") from None
+    conn.commit()
+    return get_book(conn, cursor.lastrowid)
+
+
+def update_book(conn: sqlite3.Connection, book_id: int, data: dict) -> dict:
+    """Change any of title, author, isbn, copies. Fields not given stay the same."""
+    current = get_book(conn, book_id)
+    allowed = {"title", "author", "isbn", "copies"}
+    unknown = set(data) - allowed
+    if unknown:
+        raise Invalid(f"Unknown field(s): {', '.join(sorted(unknown))}.")
+    merged = {**current, **data}
+    title, author = text_field(merged, "title"), text_field(merged, "author")
+    isbn, copies = isbn_field(merged), copies_field(merged)
+    on_loan = current["copies"] - current["available"]
+    if copies < on_loan:
+        raise Conflict(f"{on_loan} copies are on loan, so copies cannot be lower than that.")
+    try:
+        conn.execute("UPDATE books SET title = ?, author = ?, isbn = ?, copies = ? WHERE id = ?",
+                     (title, author, isbn, copies, book_id))
+    except sqlite3.IntegrityError:
+        raise Conflict("A book with this ISBN already exists.") from None
+    conn.commit()
+    return get_book(conn, book_id)
+
+
+def delete_book(conn: sqlite3.Connection, book_id: int) -> None:
+    get_book(conn, book_id)
+    if conn.execute("SELECT 1 FROM loans WHERE book_id = ?", (book_id,)).fetchone():
+        raise Conflict("Books with loan history cannot be deleted.")
+    conn.execute("DELETE FROM books WHERE id = ?", (book_id,))
+    conn.commit()
+
+
+# --------------------------------------------------------------------- members
+
+def member_dict(row: sqlite3.Row) -> dict:
+    return {key: row[key] for key in ("id", "name", "email", "joined_at")}
+
+
+def list_members(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT id, name, email, joined_at FROM members ORDER BY name, id")
+    return [member_dict(row) for row in rows]
+
+
+def get_member(conn: sqlite3.Connection, member_id: int) -> dict:
+    row = conn.execute("SELECT id, name, email, joined_at FROM members WHERE id = ?", (member_id,)).fetchone()
+    if row is None:
+        raise NotFound(f"Member {member_id} does not exist.")
+    return member_dict(row)
+
+
+def add_member(conn: sqlite3.Connection, data: dict) -> dict:
+    name, email = text_field(data, "name"), text_field(data, "email")
+    if not EMAIL_PATTERN.fullmatch(email):
+        raise Invalid("'email' must be an email address.")
+    try:
+        cursor = conn.execute("INSERT INTO members (name, email) VALUES (?, ?)", (name, email))
+    except sqlite3.IntegrityError:
+        raise Conflict("A member with this email already exists.") from None
+    conn.commit()
+    return get_member(conn, cursor.lastrowid)
+
+
+def delete_member(conn: sqlite3.Connection, member_id: int) -> None:
+    get_member(conn, member_id)
+    if conn.execute("SELECT 1 FROM loans WHERE member_id = ?", (member_id,)).fetchone():
+        raise Conflict("Members with loan history cannot be deleted.")
+    conn.execute("DELETE FROM members WHERE id = ?", (member_id,))
+    conn.commit()
+
+
+# ----------------------------------------------------------------------- loans
+
+def loan_dict(row: sqlite3.Row) -> dict:
+    return {key: row[key] for key in ("id", "book_id", "member_id", "loaned_at", "returned_at")}
+
+
+def list_loans(conn: sqlite3.Connection, open_only: bool = False) -> list[dict]:
+    query = "SELECT * FROM loans" + (" WHERE returned_at IS NULL" if open_only else "") + " ORDER BY id"
+    return [loan_dict(row) for row in conn.execute(query)]
+
+
+def borrow(conn: sqlite3.Connection, data: dict) -> dict:
+    book_id, member_id = id_field(data, "book_id"), id_field(data, "member_id")
+    book = get_book(conn, book_id)
+    get_member(conn, member_id)
+    if book["available"] < 1:
+        raise Conflict(f"No copies of book {book_id} are available.")
+    cursor = conn.execute("INSERT INTO loans (book_id, member_id) VALUES (?, ?)", (book_id, member_id))
+    conn.commit()
+    return loan_dict(conn.execute("SELECT * FROM loans WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def return_loan(conn: sqlite3.Connection, loan_id: int) -> dict:
+    row = conn.execute("SELECT * FROM loans WHERE id = ?", (loan_id,)).fetchone()
+    if row is None:
+        raise NotFound(f"Loan {loan_id} does not exist.")
+    if row["returned_at"] is not None:
+        raise Conflict(f"Loan {loan_id} has already been returned.")
+    conn.execute("UPDATE loans SET returned_at = CURRENT_TIMESTAMP WHERE id = ?", (loan_id,))
+    conn.commit()
+    return loan_dict(conn.execute("SELECT * FROM loans WHERE id = ?", (loan_id,)).fetchone())

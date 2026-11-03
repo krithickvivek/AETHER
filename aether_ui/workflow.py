@@ -8,6 +8,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
+from aether.agents import PlannerAgent
+from aether.context import FAILED as EVENT_FAILED
+from aether.context import ProjectContext, RunStore
+from aether.developer import DeveloperAgent
 from aether.manager import ManagerAgent
 from aether.models import Plan, PlanStep, TaskBrief
 from aether.planner import BASE_STEPS, FEATURE_STEPS, Planner, RuleBasedPlanner
@@ -44,6 +48,7 @@ class RunResult:
     error: str | None = None
     error_details: str | None = None
     fallback_reason: str | None = None  # set when the AI planner failed and RuleBasedPlanner was used
+    run_id: str | None = None  # the saved ProjectContext for this run (generated files, events), if any
 
     @property
     def ok(self) -> bool:
@@ -72,37 +77,60 @@ class TracingPlanner(Planner):
 
 
 def run_workflow(requirement: str, planner: Planner | None = None) -> RunResult:
-    """Run ManagerAgent with the given planner (RuleBasedPlanner by default)."""
+    """Run ManagerAgent with the given planner (RuleBasedPlanner by default), planning only."""
+    return start_project(requirement, planner)[0]
+
+
+def start_project(requirement: str, planner: Planner | None = None,
+                  store: RunStore | None = None) -> tuple[RunResult, ProjectContext]:
+    """Run the Manager pipeline. With a store, the Developer is included and the run pauses at
+    Checkpoint A (plan approval) before any files are generated."""
     tracer = TracingPlanner(planner or RuleBasedPlanner())
     log: list[str] = []
     manager = ManagerAgent(planner=tracer, log=log.append)
+    agents = [PlannerAgent(tracer)] + ([DeveloperAgent(store)] if store else [])
 
     started_at = datetime.now().isoformat(timespec="seconds")
     start = time.perf_counter()
-    plan, error, error_details = None, None, None
-    try:
-        plan = manager.run(requirement)
-    except ValueError as exc:
-        # Expected input problems, e.g. an empty requirement.
-        error = str(exc)
-    except Exception as exc:
-        error = "Something went wrong while generating the plan."
-        error_details = f"{type(exc).__name__}: {exc}"
+    context = manager.run_pipeline(requirement, agents, store=store)
     duration_ms = (time.perf_counter() - start) * 1000
+
+    error, error_details = None, None
+    failed = next((e for e in context.events if e.status == EVENT_FAILED and e.agent in ("Manager", "Planner")
+                   and e.action != "Build plan with local AI model"), None)
+    if failed and failed.agent == "Manager":
+        error = failed.detail  # expected input problems, e.g. an empty requirement
+    elif failed:
+        error = "Something went wrong while generating the plan."
+        error_details = failed.detail
     fallback_reason = getattr(tracer.inner, "fallback_reason", None)
 
-    return RunResult(
+    result = RunResult(
         requirement=" ".join(requirement.split()),
         started_at=started_at,
         duration_ms=duration_ms,
-        stages=_build_stages(tracer, plan, fallback_reason),
+        stages=_build_stages(tracer, context.plan, fallback_reason),
         log=log,
         brief=tracer.received,
-        plan=plan,
+        plan=context.plan,
         error=error,
         error_details=error_details,
         fallback_reason=fallback_reason,
+        run_id=context.run_id if store else None,
     )
+    return result, context
+
+
+def project_agents(store: RunStore) -> list:
+    """The agents of a full run, in order. The Planner has already run by the time a run is resumed."""
+    return [PlannerAgent(RuleBasedPlanner()), DeveloperAgent(store)]
+
+
+def decide_plan(context: ProjectContext, approved: bool, store: RunStore, note: str = "") -> ProjectContext:
+    """Checkpoint A: record the user's decision, then generate files (approved) or cancel (rejected)."""
+    manager = ManagerAgent(planner=RuleBasedPlanner(), log=lambda message: None)
+    manager.approve(context, "A", approved, note, store)
+    return manager.resume(context, project_agents(store), store)
 
 
 def format_duration(ms: float) -> str:
@@ -204,4 +232,5 @@ def result_from_dict(data: dict) -> RunResult:
         error=data.get("error"),
         error_details=data.get("error_details"),
         fallback_reason=data.get("fallback_reason"),  # absent in older history entries
+        run_id=data.get("run_id"),
     )

@@ -1,0 +1,60 @@
+"""Tests for saving and loading tasks. Uses a temporary in-memory database."""
+
+import unittest
+
+from todo_app import auth, tasks
+from todo_app.db import connect
+
+
+class TaskStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = connect(":memory:")
+        self.addCleanup(self.conn.close)
+        self.alice = auth.register(self.conn, "alice", "s3cret-pass")
+        self.bob = auth.register(self.conn, "bob", "s3cret-pass")
+
+    def test_add_and_list_tasks(self):
+        tasks.add_task(self.conn, self.alice, "  Buy   milk ")
+        tasks.add_task(self.conn, self.alice, "Write report")
+        titles = [row["title"] for row in tasks.list_tasks(self.conn, self.alice)]
+        self.assertEqual(titles, ["Buy milk", "Write report"])
+
+    def test_tasks_are_private_to_each_user(self):
+        tasks.add_task(self.conn, self.alice, "Alice's task")
+        self.assertEqual(tasks.list_tasks(self.conn, self.bob), [])
+
+    def test_toggle_moves_task_to_the_end(self):
+        first = tasks.add_task(self.conn, self.alice, "First")
+        tasks.add_task(self.conn, self.alice, "Second")
+        self.assertTrue(tasks.toggle_task(self.conn, self.alice, first))
+        rows = tasks.list_tasks(self.conn, self.alice)
+        self.assertEqual([(row["title"], row["done"]) for row in rows], [("Second", 0), ("First", 1)])
+        self.assertTrue(tasks.toggle_task(self.conn, self.alice, first))
+        self.assertEqual(tasks.list_tasks(self.conn, self.alice)[0]["done"], 0)
+
+    def test_users_cannot_change_other_users_tasks(self):
+        task_id = tasks.add_task(self.conn, self.alice, "Alice's task")
+        self.assertFalse(tasks.toggle_task(self.conn, self.bob, task_id))
+        self.assertFalse(tasks.delete_task(self.conn, self.bob, task_id))
+        self.assertEqual(len(tasks.list_tasks(self.conn, self.alice)), 1)
+
+    def test_delete_task(self):
+        task_id = tasks.add_task(self.conn, self.alice, "Temporary")
+        self.assertTrue(tasks.delete_task(self.conn, self.alice, task_id))
+        self.assertFalse(tasks.delete_task(self.conn, self.alice, task_id))
+        self.assertEqual(tasks.list_tasks(self.conn, self.alice), [])
+
+    def test_empty_and_overlong_titles_are_rejected(self):
+        for title in ["", "   ", "x" * (tasks.MAX_TITLE_LENGTH + 1)]:
+            with self.subTest(length=len(title)), self.assertRaises(tasks.TaskError):
+                tasks.add_task(self.conn, self.alice, title)
+
+    def test_deleting_a_user_deletes_their_tasks(self):
+        tasks.add_task(self.conn, self.alice, "Alice's task")
+        self.conn.execute("DELETE FROM users WHERE id = ?", (self.alice,))
+        count = self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        self.assertEqual(count, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

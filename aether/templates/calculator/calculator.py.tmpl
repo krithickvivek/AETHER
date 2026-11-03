@@ -1,0 +1,98 @@
+"""Command-line calculator for basic arithmetic.
+
+Usage:
+    python calculator.py 12 + 30
+    python calculator.py 7 / 2
+    python calculator.py 6 x 7       (use x for multiply if your shell expands *)
+    python calculator.py             (interactive mode; type quit to stop)
+"""
+
+import math
+import sys
+
+OPERATIONS = {
+    "+": lambda a, b: a + b,
+    "-": lambda a, b: a - b,
+    "*": lambda a, b: a * b,
+    "x": lambda a, b: a * b,
+    "/": lambda a, b: a / b,
+}
+USAGE = "Enter: number operator number (for example 3 * 4)."
+
+
+class CalculatorError(ValueError):
+    """The input could not be calculated."""
+
+
+def parse_number(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise CalculatorError(f"{text!r} is not a number.") from None
+    if not math.isfinite(value):
+        raise CalculatorError(f"{text!r} is not a finite number.")
+    return value
+
+
+def calculate(left: float, operator: str, right: float) -> float:
+    if operator not in OPERATIONS:
+        raise CalculatorError(f"Unknown operator {operator!r}. Use one of: + - * x /")
+    if operator == "/" and right == 0:
+        raise CalculatorError("Cannot divide by zero.")
+    result = OPERATIONS[operator](left, right)
+    if not math.isfinite(result):
+        raise CalculatorError("The result is too large to show.")
+    return result
+
+
+def format_result(value: float) -> str:
+    """Whole numbers without a trailing .0, and no floating-point noise (0.1 + 0.2 -> 0.3)."""
+    if float(value).is_integer() and abs(value) < 1e15:
+        return str(int(value))
+    return f"{value:.10g}"
+
+
+def evaluate(expression: str) -> str:
+    """Evaluate 'number operator number', for example '3 * 4'."""
+    parts = expression.split()
+    if len(parts) != 3:
+        raise CalculatorError(USAGE)
+    left, operator, right = parts
+    return format_result(calculate(parse_number(left), operator, parse_number(right)))
+
+
+def interactive(read=input, write=print) -> None:
+    write("Calculator. " + USAGE + " Type quit to stop.")
+    while True:
+        try:
+            line = read("> ").strip()
+        except EOFError:
+            break
+        if line.lower() in {"quit", "exit", "q"}:
+            break
+        if not line:
+            continue
+        try:
+            write(evaluate(line))
+        except CalculatorError as error:
+            write(f"Error: {error}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
+    if not args:
+        interactive()
+        return 0
+    try:
+        print(evaluate(" ".join(args)))
+    except CalculatorError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

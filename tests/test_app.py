@@ -61,6 +61,7 @@ class WebAppTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.history_file = Path(self.temp_dir.name) / "history.json"
         os.environ["AETHER_HISTORY_FILE"] = str(self.history_file)
+        os.environ["AETHER_RUNS_DIR"] = str(Path(self.temp_dir.name) / "runs")
         os.environ.pop("AETHER_PLANNER", None)
         self.urlopen = mock.patch("urllib.request.urlopen", side_effect=no_network)
         self.urlopen.start()
@@ -68,6 +69,7 @@ class WebAppTests(unittest.TestCase):
     def tearDown(self):
         self.urlopen.stop()
         os.environ.pop("AETHER_HISTORY_FILE", None)
+        os.environ.pop("AETHER_RUNS_DIR", None)
         self.temp_dir.cleanup()
 
     def submit(self, requirement: str, planner: str = "rule"):
@@ -134,6 +136,43 @@ class WebAppTests(unittest.TestCase):
         self.submit("A REST API with a database")
         entries = history.load_history(self.history_file)
         self.assertEqual(len(entries), 1)
+
+    def test_checkpoint_shows_project_type_and_planned_files_before_generation(self):
+        app = self.submit("Build a to-do website where users can log in and save tasks")
+
+        self.assertFalse(app.exception)
+        self.assertIn("To-do web app", " ".join(m.value for m in app.markdown))
+        planned = app.dataframe[0].value["File"].tolist()
+        self.assertIn("todo_app/auth.py", planned)
+        self.assertFalse(app.button(key="approve_plan").disabled)
+        self.assertEqual(list((Path(self.temp_dir.name) / "runs").glob("*/workspace")), [])
+
+    def test_approving_generates_files_and_shows_them(self):
+        app = self.submit("A command-line calculator for basic arithmetic")
+        app.button(key="approve_plan").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertIn("The Developer generated 4 files", app.success[-1].value)
+        shown = [label.split("  ·  ")[0] for label in app.selectbox(key="file_choice").options]
+        self.assertEqual(shown, ["README.md", "calculator.py", "tests/__init__.py", "tests/test_calculator.py"])
+        app.selectbox(key="file_choice").set_value("calculator.py").run()
+        self.assertTrue(any("def calculate(" in block.value for block in app.code))
+        self.assertEqual(len(list((Path(self.temp_dir.name) / "runs").glob("*/workspace/calculator.py"))), 1)
+
+    def test_rejecting_the_plan_generates_nothing(self):
+        app = self.submit("A command-line calculator for basic arithmetic")
+        app.button(key="reject_plan").click().run()
+
+        self.assertFalse(app.exception)
+        self.assertIn("no project files were generated", app.info[-1].value)
+        self.assertEqual(list((Path(self.temp_dir.name) / "runs").glob("*/workspace")), [])
+
+    def test_unsupported_requirement_cannot_be_approved(self):
+        app = self.submit("Build a multiplayer chess game with a leaderboard")
+
+        self.assertFalse(app.exception)
+        self.assertIn("No supported project type", " ".join(w.value for w in app.warning))
+        self.assertTrue(app.button(key="approve_plan").disabled)
 
     def test_empty_requirement_shows_error_and_saves_nothing(self):
         app = self.submit("   ")

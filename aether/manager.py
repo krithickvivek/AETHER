@@ -5,7 +5,10 @@ import time
 from dataclasses import fields
 from typing import TYPE_CHECKING, Callable
 
-from aether.context import COMPLETED, DONE, FAILED, SKIPPED, ProjectContext, RunStore
+from aether.context import (
+    APPROVED, AWAITING_APPROVAL, CANCELLED, COMPLETED, DONE, FAILED, REJECTED, RUNNING, SKIPPED, WAITING,
+    Approval, ProjectContext, RunStore, now,
+)
 from aether.models import Plan, TaskBrief
 from aether.planner import Planner
 
@@ -13,7 +16,8 @@ if TYPE_CHECKING:
     from aether.agents import Agent
 
 # ProjectContext fields an agent may set through AgentResult.updates.
-_UPDATABLE = {f.name for f in fields(ProjectContext)} - {"run_id", "requirement", "created_at", "status", "events"}
+_UPDATABLE = {f.name for f in fields(ProjectContext)} - {
+    "run_id", "requirement", "created_at", "status", "events", "approvals"}
 
 # Keywords that tell the Manager a requirement needs a particular feature.
 FEATURE_KEYWORDS = {
@@ -71,7 +75,9 @@ class ManagerAgent:
         """Run a requirement through a sequence of agents, sharing one ProjectContext.
 
         Each agent's result is recorded as it really happened. If an agent fails or crashes,
-        the later agents are recorded as skipped. With a store, the context is saved after every step.
+        the later agents are recorded as skipped. Before an agent that has a checkpoint, the run
+        pauses (status AWAITING_APPROVAL) until approve() and resume() are called.
+        With a store, the context is saved after every step.
         """
         context = ProjectContext.new(requirement)
         try:
@@ -83,10 +89,54 @@ class ManagerAgent:
         count = len(context.brief.features)
         context.record("Manager", "Understand requirement", DONE, f"{count} feature{'s' if count != 1 else ''} detected")
         self.log(f"[Manager] Requirement received: {context.brief.requirement}")
+        self.log(f"[Manager] Detected features: {', '.join(context.brief.features) or 'none (core steps only)'}")
         self._save(context, store)
+        return self._run_agents(context, agents, store)
 
+    def approve(self, context: ProjectContext, checkpoint: str, approved: bool, note: str = "",
+                store: RunStore | None = None) -> ProjectContext:
+        """Record the user's decision at a checkpoint. Rejecting cancels the run."""
+        if context.status != AWAITING_APPROVAL:
+            raise ValueError("This run is not waiting for approval.")
+        decision = APPROVED if approved else REJECTED
+        context.approvals.append(Approval(checkpoint, decision, now(), note))
+        context.record("User", f"Checkpoint {checkpoint}", DONE if approved else FAILED,
+                       "Approved" if approved else f"Rejected{': ' + note if note else ''}")
+        self.log(f"[Manager] Checkpoint {checkpoint}: {decision} by the user.")
+        if not approved:
+            context.status = CANCELLED
+        self._save(context, store)
+        return context
+
+    def resume(self, context: ProjectContext, agents: list["Agent"], store: RunStore | None = None) -> ProjectContext:
+        """Continue a paused run with the same agent list. Agents that already finished are not re-run."""
+        if context.status == CANCELLED:
+            done = self._done_agents(context)
+            for agent in agents:
+                if (agent.name, agent.action) not in done and not self._skipped(context, agent):
+                    context.record(agent.name, agent.action, SKIPPED, "Not run: the plan was rejected")
+            self._save(context, store)
+            return context
+        if context.status != AWAITING_APPROVAL:
+            raise ValueError("Only a run that is waiting for approval can be resumed.")
+        context.status = RUNNING
+        return self._run_agents(context, agents, store)
+
+    def _run_agents(self, context: ProjectContext, agents: list["Agent"], store: RunStore | None) -> ProjectContext:
+        done = self._done_agents(context)
         for index, agent in enumerate(agents):
-            self.log(f"[Manager] Handing off to {agent.name}...")
+            if (agent.name, agent.action) in done:
+                continue
+            checkpoint = getattr(agent, "checkpoint", None)
+            if checkpoint and not self._approved(context, checkpoint):
+                title = getattr(agent, "checkpoint_title", "Approval needed")
+                context.record("Manager", f"Checkpoint {checkpoint}: {title}", WAITING, agent.preview(context))
+                context.status = AWAITING_APPROVAL
+                self.log(f"[Manager] Waiting for your approval at checkpoint {checkpoint} before {agent.name}.")
+                self._save(context, store)
+                return context
+
+            self.log(f"[Manager] Handing off to {agent.handoff_label}...")
             start = time.perf_counter()
             try:
                 result = agent.run(context)
@@ -120,6 +170,18 @@ class ManagerAgent:
         context.status = FAILED if failed else COMPLETED
         self._save(context, store)
         return context
+
+    @staticmethod
+    def _done_agents(context: ProjectContext) -> set[tuple[str, str]]:
+        return {(e.agent, e.action) for e in context.events if e.status == DONE}
+
+    @staticmethod
+    def _skipped(context: ProjectContext, agent: "Agent") -> bool:
+        return any(e.agent == agent.name and e.action == agent.action and e.status == SKIPPED for e in context.events)
+
+    @staticmethod
+    def _approved(context: ProjectContext, checkpoint: str) -> bool:
+        return any(a.checkpoint == checkpoint and a.decision == APPROVED for a in context.approvals)
 
     @staticmethod
     def _save(context: ProjectContext, store: RunStore | None) -> None:

@@ -1,0 +1,177 @@
+"""Request handling for the to-do web app.
+
+Kept separate from the HTTP server (server.py) so every page and form can be tested
+directly. All user text is HTML-escaped before it is shown.
+"""
+
+import html
+import re
+import sqlite3
+from dataclasses import dataclass, field
+from http.cookies import SimpleCookie
+from pathlib import Path
+from urllib.parse import parse_qs
+
+from todo_app import auth, tasks
+
+SESSION_COOKIE = "todo_session"
+STATIC_DIR = Path(__file__).with_name("static")
+TASK_ACTION = re.compile(r"/tasks/(\d+)/(toggle|delete)")
+
+
+@dataclass
+class Response:
+    status: int
+    body: str = ""
+    content_type: str = "text/html; charset=utf-8"
+    headers: list[tuple[str, str]] = field(default_factory=list)
+
+
+def redirect(location: str, cookie: str | None = None) -> Response:
+    response = Response(303, headers=[("Location", location)])
+    if cookie:
+        response.headers.append(("Set-Cookie", cookie))
+    return response
+
+
+def session_cookie(token: str) -> str:
+    return f"{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/"
+
+
+def expired_cookie() -> str:
+    return f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+
+
+def page(title: str, content: str, username: str | None = None, status: int = 200) -> Response:
+    if username:
+        nav = (f'<span>Signed in as <b>{html.escape(username)}</b></span>'
+               '<form method="post" action="/logout"><button class="link">Log out</button></form>')
+    else:
+        nav = '<a href="/login">Log in</a> <a href="/register">Register</a>'
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{html.escape(title)} - To-do</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header><a class="brand" href="/">To-do</a><nav>{nav}</nav></header>
+<main>
+<h1>{html.escape(title)}</h1>
+{content}
+</main>
+</body>
+</html>"""
+    return Response(status, body)
+
+
+def error_box(message: str | None) -> str:
+    return f'<p class="error" role="alert">{html.escape(message)}</p>' if message else ""
+
+
+def account_form(action: str, button: str, error: str | None = None, username: str = "") -> str:
+    return f"""{error_box(error)}
+<form method="post" action="{action}" class="card">
+  <label>Username <input name="username" value="{html.escape(username)}" required autocomplete="username"></label>
+  <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+  <button>{button}</button>
+</form>"""
+
+
+class TodoApp:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    def handle(self, method: str, path: str, body: bytes = b"", cookie_header: str = "") -> Response:
+        if method not in ("GET", "POST"):
+            return page("Method not allowed", "<p>Only GET and POST are supported.</p>", status=405)
+        form = {}
+        if method == "POST":
+            form = {key: values[0] for key, values in parse_qs(body.decode("utf-8", "replace")).items()}
+        token = self.session_token(cookie_header)
+        user = auth.user_for_session(self.conn, token)
+
+        if path == "/static/style.css" and method == "GET":
+            return Response(200, (STATIC_DIR / "style.css").read_text(encoding="utf-8"), "text/css; charset=utf-8")
+        if path == "/":
+            return redirect("/tasks" if user else "/login")
+        if path == "/register":
+            return self.register(method, form)
+        if path == "/login":
+            return self.login(method, form)
+        if path == "/logout" and method == "POST":
+            auth.end_session(self.conn, token)
+            return redirect("/login", expired_cookie())
+        if path == "/tasks" or TASK_ACTION.fullmatch(path):
+            if user is None:
+                return redirect("/login")
+            return self.tasks(method, path, form, user)
+        return page("Page not found", '<p>There is nothing here. <a href="/">Go to your tasks</a>.</p>',
+                    user["username"] if user else None, status=404)
+
+    @staticmethod
+    def session_token(cookie_header: str) -> str | None:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(cookie_header or "")
+        except Exception:
+            return None
+        morsel = cookie.get(SESSION_COOKIE)
+        return morsel.value if morsel else None
+
+    def register(self, method: str, form: dict) -> Response:
+        if method == "GET":
+            return page("Create an account", account_form("/register", "Register"))
+        username, password = form.get("username", ""), form.get("password", "")
+        try:
+            user_id = auth.register(self.conn, username, password)
+        except auth.AuthError as error:
+            return page("Create an account", account_form("/register", "Register", str(error), username), status=400)
+        return redirect("/tasks", session_cookie(auth.create_session(self.conn, user_id)))
+
+    def login(self, method: str, form: dict) -> Response:
+        if method == "GET":
+            return page("Log in", account_form("/login", "Log in"))
+        username, password = form.get("username", ""), form.get("password", "")
+        user_id = auth.authenticate(self.conn, username, password)
+        if user_id is None:
+            return page("Log in", account_form("/login", "Log in", "Wrong username or password.", username), status=401)
+        return redirect("/tasks", session_cookie(auth.create_session(self.conn, user_id)))
+
+    def tasks(self, method: str, path: str, form: dict, user: sqlite3.Row) -> Response:
+        error = None
+        if method == "POST" and path == "/tasks":
+            try:
+                tasks.add_task(self.conn, user["id"], form.get("title", ""))
+                return redirect("/tasks")
+            except tasks.TaskError as exc:
+                error = str(exc)
+        elif method == "POST":
+            task_id, action = TASK_ACTION.fullmatch(path).groups()
+            change = tasks.toggle_task if action == "toggle" else tasks.delete_task
+            if not change(self.conn, user["id"], int(task_id)):
+                return page("Task not found", '<p>That task does not exist. <a href="/tasks">Back</a>.</p>',
+                            user["username"], status=404)
+            return redirect("/tasks")
+        elif path != "/tasks":
+            return page("Method not allowed", "<p>Use the buttons on the task list.</p>", user["username"], status=405)
+        return page("Your tasks", self.task_list(user["id"], error), user["username"], status=400 if error else 200)
+
+    def task_list(self, user_id: int, error: str | None) -> str:
+        rows = []
+        for task in tasks.list_tasks(self.conn, user_id):
+            done = bool(task["done"])
+            rows.append(f"""<li class="{'done' if done else ''}">
+  <span class="title">{html.escape(task["title"])}</span>
+  <form method="post" action="/tasks/{task["id"]}/toggle"><button class="link">{'Undo' if done else 'Done'}</button></form>
+  <form method="post" action="/tasks/{task["id"]}/delete"><button class="link danger">Delete</button></form>
+</li>""")
+        items = f'<ul class="tasks">{"".join(rows)}</ul>' if rows else '<p class="empty">No tasks yet. Add your first one above.</p>'
+        return f"""{error_box(error)}
+<form method="post" action="/tasks" class="add">
+  <input name="title" placeholder="What needs doing?" maxlength="{tasks.MAX_TITLE_LENGTH}" required aria-label="New task">
+  <button>Add task</button>
+</form>
+{items}"""
