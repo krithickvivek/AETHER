@@ -8,7 +8,7 @@ checksum and the plan steps it carries out. It does not run any generated code.
 from dataclasses import dataclass
 
 from aether.agents import Agent, AgentResult
-from aether.context import DONE, FAILED, ProjectContext, RunStore
+from aether.context import APPROVED, DONE, FAILED, ProjectContext, RunStore
 from aether.templates import TEMPLATES, ProjectTemplate, TemplateChoice, choose_template, map_coverage
 from aether.workspace import Workspace, WorkspaceError
 
@@ -35,8 +35,16 @@ class DevelopmentPreview:
         return text
 
 
-def preview(context: ProjectContext) -> DevelopmentPreview:
-    choice = choose_template(context.brief)
+def approved_override(context: ProjectContext) -> str | None:
+    """The template the user explicitly chose when approving Checkpoint A, if any."""
+    for approval in reversed(context.approvals):
+        if approval.checkpoint == DeveloperAgent.checkpoint and approval.decision == APPROVED:
+            return approval.choice or None
+    return None
+
+
+def preview(context: ProjectContext, override: str | None = None) -> DevelopmentPreview:
+    choice = choose_template(context.brief, override)
     if choice.template is None or context.plan is None:
         return DevelopmentPreview(choice, [], {}, [])
     covers, uncovered = map_coverage(context.plan, choice.template)
@@ -58,7 +66,8 @@ class DeveloperAgent(Agent):
     def run(self, context: ProjectContext) -> AgentResult:
         if context.brief is None or context.plan is None:
             return AgentResult(FAILED, "There is no approved plan to build from.")
-        plan_preview = preview(context)
+        override = approved_override(context)
+        plan_preview = preview(context, override)  # without an override, only a clearly fitting template is used
         template = plan_preview.template
         if template is None:
             supported = ", ".join(t.title for t in TEMPLATES)
@@ -78,6 +87,10 @@ class DeveloperAgent(Agent):
 
         notes = {"developer_template": template.title}
         detail = f"{len(records)} files for the {template.title} ({sum(r.size for r in records):,} bytes)"
+        if override:
+            notes["developer_override"] = (f"The user explicitly chose the {template.title} template at Checkpoint A, "
+                                           "although it does not fully fit the requirement.")
+            detail += "; built by explicit override"
         if plan_preview.choice.unsupported:
             notes["developer_unsupported"] = ", ".join(plan_preview.choice.unsupported)
             detail += f"; not covered: {notes['developer_unsupported']}"

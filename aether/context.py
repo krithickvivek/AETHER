@@ -61,6 +61,7 @@ class Approval:
     decision: str
     time: str
     note: str = ""
+    choice: str = ""  # an option the user explicitly picked, e.g. a template override at Checkpoint A
 
 
 @dataclass

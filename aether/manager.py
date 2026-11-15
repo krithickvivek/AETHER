@@ -94,14 +94,22 @@ class ManagerAgent:
         return self._run_agents(context, agents, store)
 
     def approve(self, context: ProjectContext, checkpoint: str, approved: bool, note: str = "",
-                store: RunStore | None = None) -> ProjectContext:
-        """Record the user's decision at a checkpoint. Rejecting cancels the run."""
+                store: RunStore | None = None, choice: str = "") -> ProjectContext:
+        """Record the user's decision at a checkpoint. Rejecting cancels the run.
+
+        `choice` records an option the user explicitly picked with the approval (for example a
+        template override), so the agent after the checkpoint acts on a recorded human decision.
+        """
         if context.status != AWAITING_APPROVAL:
             raise ValueError("This run is not waiting for approval.")
         decision = APPROVED if approved else REJECTED
-        context.approvals.append(Approval(checkpoint, decision, now(), note))
-        context.record("User", f"Checkpoint {checkpoint}", DONE if approved else FAILED,
-                       "Approved" if approved else f"Rejected{': ' + note if note else ''}")
+        choice = choice if approved else ""
+        context.approvals.append(Approval(checkpoint, decision, now(), note, choice))
+        if approved:
+            detail = f"Approved with an explicit override: {choice}" if choice else "Approved"
+        else:
+            detail = f"Rejected{': ' + note if note else ''}"
+        context.record("User", f"Checkpoint {checkpoint}", DONE if approved else FAILED, detail)
         self.log(f"[Manager] Checkpoint {checkpoint}: {decision} by the user.")
         if not approved:
             context.status = CANCELLED

@@ -17,6 +17,7 @@ from aether.config import build_planner, planner_setting
 from aether.context import AWAITING_APPROVAL, CANCELLED, COMPLETED, ProjectContext, RunStore
 from aether.developer import preview
 from aether.ollama_planner import DEFAULT_MODEL, ollama_status
+from aether.templates import POOR_FIT, TemplateChoice
 from aether.workspace import Workspace
 from aether_ui import history, theme
 from aether_ui.workflow import (
@@ -230,16 +231,64 @@ def render_development(context: ProjectContext) -> None:
             st.error(f"The Developer could not generate this project. {failure.detail}", icon=":material/error:")
 
 
+def feature_names(features: list[str]) -> str:
+    return ", ".join(FEATURE_LABELS.get(f, f) for f in features) or "none"
+
+
+def render_fit(choice: TemplateChoice) -> None:
+    """Why this project type was (or was not) chosen, and which requested features it covers."""
+    lines = []
+    if choice.evidence:
+        lines.append("- Names the project type: " + ", ".join(f"`{w}`" for w in choice.evidence))
+    else:
+        lines.append("- No words in the requirement name a supported project type.")
+    if choice.hints:
+        lines.append("- Related words (not enough on their own): " + ", ".join(f"`{w}`" for w in choice.hints))
+    if choice.template is not None or choice.status == POOR_FIT:
+        lines.append(f"- Supported requirements: {feature_names(choice.supported)}")
+    lines.append(f"- Not supported: {feature_names(choice.unsupported)}")
+    st.markdown("**Template fit**\n\n" + "\n".join(lines))
+
+
+def render_override(context: ProjectContext, choice: TemplateChoice, store: RunStore) -> None:
+    """An explicit, acknowledged override for when no template was chosen automatically."""
+    with st.expander("Override: build a template anyway (not recommended)", icon=":material/warning:"):
+        st.markdown("AETHER did not choose a template because it does not clearly fit this requirement. "
+                    "An override generates a tested template **as it is**: it is not adapted to your requirement.")
+        titles = {t.key: t.title for t in choice.candidates}
+        key = st.selectbox("Template to build", list(titles), format_func=titles.get,
+                           key=f"override_template_{context.run_id}")
+        forced = preview(context, override=key)
+        consequences = [f"The project will be a **{titles[key]}**, whatever the requirement asks for."]
+        if forced.choice.unsupported:
+            consequences.append(f"These requested features will **not** be built: "
+                                f"{feature_names(forced.choice.unsupported)}.")
+        if forced.uncovered_steps:
+            consequences.append(f"Plan steps {', '.join(map(str, forced.uncovered_steps))} will have no file.")
+        consequences.append("The run is recorded as an explicit override in the activity log.")
+        st.markdown("\n".join(f"- {line}" for line in consequences))
+        acknowledged = st.checkbox("I understand these consequences and want to generate this template anyway.",
+                                   key=f"override_ack_{context.run_id}")
+        if st.button(f"Override and generate {titles[key]}", key="override_plan", disabled=not acknowledged,
+                     icon=":material/warning:"):
+            with st.spinner("Developer is writing the project files..."):
+                st.session_state["context"] = decide_plan(context, approved=True, store=store, override=key,
+                                                          note="Explicit template override in the web app")
+            st.rerun()
+
+
 def render_checkpoint(context: ProjectContext) -> None:
     plan_preview = preview(context)
     template = plan_preview.template
     store = run_store()
     theme.label("Checkpoint A · Approve the plan")
     if template is None:
-        st.warning(f"{plan_preview.choice.reason} The Developer only writes projects from tested templates, "
-                   "so it cannot build this one yet.", icon=":material/report:")
+        st.warning(f"{plan_preview.choice.reason} The Developer only writes projects from tested templates "
+                   "that clearly fit, so it will not build this one automatically.", icon=":material/report:")
+        render_fit(plan_preview.choice)
     else:
         st.markdown(f"**{template.title}** · {template.kind}  \n{template.description}")
+        render_fit(plan_preview.choice)
         if plan_preview.choice.unsupported:
             missing = ", ".join(FEATURE_LABELS.get(f, f) for f in plan_preview.choice.unsupported)
             st.warning(f"This template does not include: {missing}. Those parts of the plan will not be built.",
@@ -264,6 +313,8 @@ def render_checkpoint(context: ProjectContext) -> None:
                          width="stretch"):
         st.session_state["context"] = decide_plan(context, approved=False, store=store, note="Rejected in the web app")
         st.rerun()
+    if plan_preview.choice.can_override and store is not None:
+        render_override(context, plan_preview.choice, store)
 
 
 def render_files(context: ProjectContext) -> None:
@@ -275,6 +326,8 @@ def render_files(context: ProjectContext) -> None:
     theme.label("Project files")
     if context.status == COMPLETED and developer is not None:
         st.success(f"The Developer generated {developer.detail.split(';', 1)[0]}.", icon=":material/folder_code:")
+    if context.notes.get("developer_override"):
+        st.warning(context.notes["developer_override"], icon=":material/warning:")
     for note in ("developer_unsupported", "developer_uncovered_steps"):
         if context.notes.get(note):
             label = "Not covered by the template" if note == "developer_unsupported" else "Plan steps without a file"

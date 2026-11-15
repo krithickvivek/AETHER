@@ -126,10 +126,13 @@ def project_agents(store: RunStore) -> list:
     return [PlannerAgent(RuleBasedPlanner()), DeveloperAgent(store)]
 
 
-def decide_plan(context: ProjectContext, approved: bool, store: RunStore, note: str = "") -> ProjectContext:
-    """Checkpoint A: record the user's decision, then generate files (approved) or cancel (rejected)."""
+def decide_plan(context: ProjectContext, approved: bool, store: RunStore, note: str = "",
+                override: str = "") -> ProjectContext:
+    """Checkpoint A: record the user's decision, then generate files (approved) or cancel (rejected).
+
+    `override` is a template key the user explicitly chose when no template fitted automatically."""
     manager = ManagerAgent(planner=RuleBasedPlanner(), log=lambda message: None)
-    manager.approve(context, "A", approved, note, store)
+    manager.approve(context, "A", approved, note, store, choice=override)
     return manager.resume(context, project_agents(store), store)
 
 
