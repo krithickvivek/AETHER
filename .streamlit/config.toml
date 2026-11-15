@@ -10,20 +10,24 @@ gatherUsageStats = false
 # Hide the "Deploy" button; this app is meant to run locally.
 toolbarMode = "minimal"
 
-# The app follows the computer's light/dark setting.
+# Two themes: dark (the primary design) and light. Streamlit starts on the computer's
+# light/dark setting; a viewer can switch in the menu (Settings > Light / Dark / System),
+# and that choice is remembered in their browser. Keep these colours in step with
+# LIGHT and DARK in aether_ui/theme.py.
 [theme]
 baseRadius = "0.5rem"
 
 [theme.light]
 primaryColor = "#6D28D9"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F6F6F7"
+secondaryBackgroundColor = "#F4F4F6"
 textColor = "#18181B"
 borderColor = "#E4E4E7"
 
 [theme.dark]
-primaryColor = "#A78BFA"
-backgroundColor = "#0B0B0D"
-secondaryBackgroundColor = "#17171A"
+primaryColor = "#8B5CF6"
+backgroundColor = "#09090B"
+secondaryBackgroundColor = "#17171B"
 textColor = "#EDEDEF"
-borderColor = "#27272A"
+borderColor = "#26262B"
+codeBackgroundColor = "#111114"

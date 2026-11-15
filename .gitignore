@@ -27,3 +27,15 @@ models/
 # Temporary files
 *.tmp
 *.log
+
+# Test coverage output
+.coverage
+htmlcov/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Claude Code local configuration
+.claude/

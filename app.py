@@ -8,6 +8,7 @@ This file only handles layout, navigation and display.
 """
 
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
@@ -17,11 +18,12 @@ from aether.config import build_planner, planner_setting
 from aether.context import AWAITING_APPROVAL, CANCELLED, COMPLETED, ProjectContext, RunStore
 from aether.developer import preview
 from aether.ollama_planner import DEFAULT_MODEL, ollama_status
-from aether.templates import POOR_FIT, TemplateChoice
+from aether.templates import AMBIGUOUS, POOR_FIT, TemplateChoice
 from aether.workspace import Workspace
 from aether_ui import history, theme
 from aether_ui.workflow import (
-    FEATURE_LABELS, RunResult, decide_plan, format_duration, group_by_phase, plan_to_markdown, start_project,
+    FEATURE_LABELS, RunResult, decide_plan, format_duration, group_by_phase, plan_to_markdown, progress_steps,
+    start_project,
 )
 
 PLANNER_LABELS = {
@@ -35,6 +37,26 @@ EXAMPLES = {
     "Library REST API": "Create a REST API for a library that stores books and members in a database",
     "CLI calculator": "A command-line calculator for basic arithmetic",
 }
+EXAMPLE_ICONS = {
+    "To-do web app": ":material/checklist:",
+    "Library REST API": ":material/local_library:",
+    "CLI calculator": ":material/calculate:",
+}
+
+
+def display_path(path: Path) -> str:
+    """A short form of a local folder for the page: no user name or full path.
+
+    ~/AETHER-projects/<run id>/workspace for the default location, otherwise only the last three folders.
+    """
+    path = Path(path)
+    try:
+        relative = path.resolve().relative_to(Path.home().resolve())
+        if len(relative.parts) <= 4:
+            return "~/" + relative.as_posix()
+    except ValueError:
+        pass
+    return "…/" + "/".join(path.parts[-3:])
 
 
 def format_time(iso: str) -> str:
@@ -115,24 +137,30 @@ def generate(choice: str) -> None:
 # ------------------------------------------------------------------ workspace
 
 def workspace_page() -> None:
-    theme.hero()
+    # Compact once a run is on screen, including the rerun in which Generate was just clicked.
+    theme.hero(compact=st.session_state.get("result") is not None or bool(st.session_state.get("generate")))
 
-    theme.label("Requirement")
-    st.text_area(
-        "Software requirement",
-        key="requirement",
-        height=130,
-        max_chars=2000,
-        placeholder="Describe the software you want to build, e.g. a to-do website where users can log in and save tasks.",
-        label_visibility="collapsed",
-    )
-    left, right = st.columns([3, 1], vertical_alignment="bottom")
-    with left:
-        st.pills("Try an example", list(EXAMPLES), key="example", on_change=use_example)
-    with right:
-        clicked = st.button("Generate plan", key="generate", type="primary",
-                            icon=":material/arrow_forward:", width="stretch")
-    choice = render_planner_choice()
+    with st.container(key="ae_input"):  # styled as one input panel (.st-key-ae_input in theme.py)
+        theme.input_header("Requirement", "Mention login, saving data, web pages or an API to add those steps.")
+        st.pills("Start from an example", list(EXAMPLES), key="example", on_change=use_example,
+                 format_func=lambda name: f"{EXAMPLE_ICONS[name]} {name}",
+                 help="Fills in a requirement that matches one of AETHER's three project templates. "
+                      "You can edit it before generating.")
+        st.text_area(
+            "Software requirement",
+            key="requirement",
+            height=150,
+            max_chars=2000,
+            placeholder="Describe the software you want to build, e.g. a to-do website where users can log in "
+                        "and save their tasks.",
+            label_visibility="collapsed",
+        )
+        planner_col, button_col = st.columns([3, 1], vertical_alignment="bottom")
+        with planner_col:
+            choice = render_planner_choice()
+        with button_col:
+            clicked = st.button("Generate plan", key="generate", type="primary",
+                                icon=":material/arrow_forward:", width="stretch")
 
     if clicked:
         generate(choice)
@@ -152,6 +180,7 @@ def workspace_page() -> None:
 
 def render_result(result: RunResult) -> None:
     st.divider()
+    theme.progress(progress_steps(result, st.session_state.get("context")))
 
     if not result.ok:
         st.error(result.error, icon=":material/error:")
@@ -179,43 +208,47 @@ def render_result(result: RunResult) -> None:
         cols[2].metric("Phases", len(group_by_phase(result.plan.steps)))
         cols[3].metric("Run time", format_duration(result.duration_ms))
 
-    flow_col, plan_col = st.columns([5, 7], gap="large")
-    planner_name = result.stages[-1].agent
     context: ProjectContext | None = st.session_state.get("context")
 
-    with flow_col:
-        theme.label("Workflow")
-        if context is not None:
-            theme.events(context.events)  # the run's real activity log, including approvals
-        else:
-            theme.stages(result.stages)  # runs saved before the activity log existed
+    # The decision comes first (Checkpoint A, or the files it produced), then the plan it is about.
+    if context is not None and context.plan is not None:
+        render_development(context)
+        st.divider()
 
-        theme.label("Handoff")
-        theme.handoff(planner_name, result.brief, result.plan)
-        if result.brief:
-            # The actual object the Planner received, captured by TracingPlanner.
-            st.code(f"TaskBrief(\n  requirement={result.brief.requirement!r},\n"
-                    f"  features={result.brief.features!r},\n)", language="python", wrap_lines=True)
-        with st.expander("Manager log"):
-            st.code("\n".join(result.log) or "(no messages)", language=None, wrap_lines=True)
-
-    with plan_col:
-        if not result.ok:
-            theme.label("Plan explorer")
-            theme.empty_state("No plan produced",
-                              "The Manager stopped before handing off, so the Planner did not run.")
-            return
+    if result.ok:
         theme.label("Detected features")
         theme.feature_chips(result.brief.features)
         render_plan_explorer(result)
+    else:
+        theme.label("Plan explorer")
+        theme.empty_state("No plan produced", "The Manager stopped before handing off, so the Planner did not run.")
 
-    if context is not None and context.plan is not None:
-        render_development(context)
+    render_under_the_hood(result, context)
+
+
+def render_under_the_hood(result: RunResult, context: ProjectContext | None) -> None:
+    """Agent activity, the Manager -> Planner handoff, the TaskBrief and the Manager log, collapsed by default."""
+    with st.expander("Under the hood: agent activity, handoff and TaskBrief", icon=":material/terminal:"):
+        activity_col, handoff_col = st.columns([5, 7], gap="large")
+        with activity_col:
+            theme.label("Agent activity")
+            if context is not None:
+                theme.events(context.events)  # the run's real activity log, including approvals
+            else:
+                theme.stages(result.stages)  # runs saved before the activity log existed
+        with handoff_col:
+            theme.label("Handoff")
+            theme.handoff(result.stages[-1].agent, result.brief, result.plan)
+            if result.brief:
+                # The actual object the Planner received, captured by TracingPlanner.
+                st.code(f"TaskBrief(\n  requirement={result.brief.requirement!r},\n"
+                        f"  features={result.brief.features!r},\n)", language="python", wrap_lines=True)
+            theme.label("Manager log")
+            st.code("\n".join(result.log) or "(no messages)", language=None, wrap_lines=True)
 
 
 def render_development(context: ProjectContext) -> None:
     """Checkpoint A before generation, then the files the Developer actually wrote."""
-    st.divider()
     if context.status == AWAITING_APPROVAL:
         render_checkpoint(context)
     elif context.status == CANCELLED:
@@ -277,44 +310,70 @@ def render_override(context: ProjectContext, choice: TemplateChoice, store: RunS
             st.rerun()
 
 
+def fit_badge(plan_preview) -> tuple[str, str]:
+    """(label, tone) for the template-fit status shown in the checkpoint header."""
+    choice = plan_preview.choice
+    if plan_preview.template is not None:
+        return ("Partial fit", "warn") if choice.unsupported else ("Fits the requirement", "ok")
+    if choice.status == POOR_FIT:
+        return "Poor fit", "fail"
+    if choice.status == AMBIGUOUS:
+        return "Ambiguous: more than one project type", "warn"
+    return "No matching template", "fail"
+
+
 def render_checkpoint(context: ProjectContext) -> None:
     plan_preview = preview(context)
     template = plan_preview.template
     store = run_store()
-    theme.label("Checkpoint A · Approve the plan")
-    if template is None:
-        st.warning(f"{plan_preview.choice.reason} The Developer only writes projects from tested templates "
-                   "that clearly fit, so it will not build this one automatically.", icon=":material/report:")
-        render_fit(plan_preview.choice)
-    else:
-        st.markdown(f"**{template.title}** · {template.kind}  \n{template.description}")
-        render_fit(plan_preview.choice)
-        if plan_preview.choice.unsupported:
-            missing = ", ".join(FEATURE_LABELS.get(f, f) for f in plan_preview.choice.unsupported)
-            st.warning(f"This template does not include: {missing}. Those parts of the plan will not be built.",
-                       icon=":material/report:")
-        if plan_preview.uncovered_steps:
-            steps = ", ".join(map(str, plan_preview.uncovered_steps))
-            st.warning(f"No generated file carries out plan step(s) {steps}.", icon=":material/report:")
-        rows = [{"File": path, "Plan steps": ", ".join(map(str, plan_preview.covers.get(path, []))) or "-"}
-                for path in plan_preview.files]
-        st.dataframe(rows, hide_index=True, width="stretch")
-        if store is not None:
-            st.caption(f"{len(plan_preview.files)} files will be written to {store.workspace_dir(context.run_id)}. "
-                       "Generated code is not run.")
+    plan_steps = len(context.plan.steps)
+    file_count = len(plan_preview.files)
 
-    approve_col, reject_col, _ = st.columns([2, 2, 3])
-    if approve_col.button("Approve and generate files", key="approve_plan", type="primary",
-                          disabled=template is None or store is None, icon=":material/check:", width="stretch"):
-        with st.spinner("Developer is writing the project files..."):
-            st.session_state["context"] = decide_plan(context, approved=True, store=store)
-        st.rerun()
-    if reject_col.button("Reject plan", key="reject_plan", disabled=store is None, icon=":material/close:",
-                         width="stretch"):
-        st.session_state["context"] = decide_plan(context, approved=False, store=store, note="Rejected in the web app")
-        st.rerun()
-    if plan_preview.choice.can_override and store is not None:
-        render_override(context, plan_preview.choice, store)
+    with st.container(key="ae_checkpoint"):  # highlighted panel (.st-key-ae_checkpoint in theme.py)
+        theme.checkpoint_header("Checkpoint A · Approve the plan", [
+            fit_badge(plan_preview),
+            (f"{file_count} files planned" if template is not None else "No files planned", "neutral"),
+            ("Nothing written yet", "neutral"),
+        ])
+        if template is None:
+            st.warning(f"{plan_preview.choice.reason} The Developer only writes projects from tested templates "
+                       "that clearly fit, so it will not build this one automatically.", icon=":material/report:")
+            render_fit(plan_preview.choice)
+        else:
+            st.markdown(f"**{template.title}** · {template.kind}  \n{template.description}")
+            fit_col, files_col = st.columns([5, 7], gap="large")
+            with fit_col:
+                render_fit(plan_preview.choice)
+                if plan_preview.choice.unsupported:
+                    missing = ", ".join(FEATURE_LABELS.get(f, f) for f in plan_preview.choice.unsupported)
+                    st.warning(f"This template does not include: {missing}. Those parts of the plan will not be built.",
+                               icon=":material/report:")
+                if plan_preview.uncovered_steps:
+                    steps = ", ".join(map(str, plan_preview.uncovered_steps))
+                    st.warning(f"No generated file carries out plan step(s) {steps}.", icon=":material/report:")
+            with files_col:
+                rows = [{"File": path, "Plan steps": ", ".join(map(str, plan_preview.covers.get(path, []))) or "-"}
+                        for path in plan_preview.files]
+                st.dataframe(rows, hide_index=True, width="stretch")
+                if store is not None:
+                    st.caption(f"{file_count} files will be written to {display_path(store.workspace_dir(context.run_id))}. "
+                               "Generated code is not run.")
+
+        approve_col, reject_col, note_col = st.columns([2, 2, 3], vertical_alignment="center")
+        if approve_col.button("Approve and generate files", key="approve_plan", type="primary",
+                              disabled=template is None or store is None, icon=":material/check:", width="stretch"):
+            with st.spinner("Developer is writing the project files..."):
+                st.session_state["context"] = decide_plan(context, approved=True, store=store)
+            st.rerun()
+        if reject_col.button("Reject plan", key="reject_plan", disabled=store is None, icon=":material/close:",
+                             width="stretch"):
+            st.session_state["context"] = decide_plan(context, approved=False, store=store,
+                                                      note="Rejected in the web app")
+            st.rerun()
+        note_col.caption(f"Review the {plan_steps} plan steps below before deciding. "
+                         "Rejecting cancels the run and writes nothing.")
+        if plan_preview.choice.can_override and store is not None:
+            render_override(context, plan_preview.choice, store)
 
 
 def render_files(context: ProjectContext) -> None:
@@ -323,31 +382,39 @@ def render_files(context: ProjectContext) -> None:
         return
     workspace = Workspace(store.workspace_dir(context.run_id))
     developer = next((e for e in reversed(context.events) if e.agent == "Developer"), None)
-    theme.label("Project files")
-    if context.status == COMPLETED and developer is not None:
-        st.success(f"The Developer generated {developer.detail.split(';', 1)[0]}.", icon=":material/folder_code:")
-    if context.notes.get("developer_override"):
-        st.warning(context.notes["developer_override"], icon=":material/warning:")
-    for note in ("developer_unsupported", "developer_uncovered_steps"):
-        if context.notes.get(note):
-            label = "Not covered by the template" if note == "developer_unsupported" else "Plan steps without a file"
-            st.warning(f"{label}: {context.notes[note]}", icon=":material/report:")
-    st.caption(f"Saved in {workspace.root}. Generated code has not been run, reviewed or tested yet.")
-
     by_path = {record.path: record for record in context.files}
-    choice = st.selectbox("File", sorted(by_path), key="file_choice",
-                          format_func=lambda path: f"{path}  ·  {by_path[path].size:,} bytes")
-    record = by_path[choice]
-    covers = ", ".join(map(str, record.covers)) or "none"
-    st.caption(f"Written by {record.author} · carries out plan steps {covers} · SHA-256 {record.sha256[:16]}…")
-    try:
-        text = workspace.read_text(choice)
-    except OSError:
-        st.error("This file is no longer on disk.", icon=":material/error:")
-        return
-    if hashlib.sha256(text.encode("utf-8")).hexdigest() != record.sha256:
-        st.warning("This file has changed since the Developer wrote it.", icon=":material/report:")
-    st.code(text or "(empty file)", language=LANGUAGES.get(choice.rsplit(".", 1)[-1]), line_numbers=True)
+    total = sum(record.size for record in context.files)
+
+    with st.container(key="ae_files"):  # panel (.st-key-ae_files in theme.py)
+        theme.checkpoint_header("Generated files", [
+            (context.notes.get("developer_template", "Project"), "ok"),
+            (f"{len(by_path)} files · {total:,} bytes", "neutral"),
+            ("Not run", "neutral"),
+        ])
+        if context.status == COMPLETED and developer is not None:
+            st.success(f"The Developer generated {developer.detail.split(';', 1)[0]}.", icon=":material/folder_code:")
+        if context.notes.get("developer_override"):
+            st.warning(context.notes["developer_override"], icon=":material/warning:")
+        for note in ("developer_unsupported", "developer_uncovered_steps"):
+            if context.notes.get(note):
+                label = "Not covered by the template" if note == "developer_unsupported" else "Plan steps without a file"
+                st.warning(f"{label}: {context.notes[note]}", icon=":material/report:")
+
+        choice = st.selectbox("File", sorted(by_path), key="file_choice",
+                              format_func=lambda path: f"{path}  ·  {by_path[path].size:,} bytes")
+        record = by_path[choice]
+        try:
+            text = workspace.read_text(choice)
+        except OSError:
+            st.error("This file is no longer on disk.", icon=":material/error:")
+            return
+        changed = hashlib.sha256(text.encode("utf-8")).hexdigest() != record.sha256
+        language = LANGUAGES.get(choice.rsplit(".", 1)[-1])
+        theme.file_header(record, language, changed)
+        if changed:
+            st.warning("This file has changed since the Developer wrote it.", icon=":material/report:")
+        st.code(text or "(empty file)", language=language, line_numbers=True)
+        st.caption(f"Saved in {display_path(workspace.root)}. Generated code has not been run, reviewed or tested yet.")
 
 
 def render_plan_explorer(result: RunResult) -> None:

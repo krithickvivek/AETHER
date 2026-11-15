@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 
 from aether.agents import PlannerAgent
+from aether.context import APPROVED, AWAITING_APPROVAL, CANCELLED
 from aether.context import FAILED as EVENT_FAILED
 from aether.context import ProjectContext, RunStore
 from aether.developer import DeveloperAgent
@@ -134,6 +135,52 @@ def decide_plan(context: ProjectContext, approved: bool, store: RunStore, note: 
     manager = ManagerAgent(planner=RuleBasedPlanner(), log=lambda message: None)
     manager.approve(context, "A", approved, note, store, choice=override)
     return manager.resume(context, project_agents(store), store)
+
+
+CURRENT, PENDING = "current", "pending"  # progress statuses, alongside DONE and FAILED
+
+
+@dataclass
+class ProgressStep:
+    title: str
+    status: str   # DONE, CURRENT, FAILED or PENDING
+    detail: str = ""
+
+
+def progress_steps(result: RunResult, context: ProjectContext | None) -> list[ProgressStep]:
+    """Requirement -> Plan -> Approval -> Generated files, from what really happened in the run.
+
+    Without a saved context (planning-only runs, or history saved before runs were stored),
+    Approval and Generated files are left pending.
+    """
+    if result.brief is None:
+        requirement = ProgressStep("Requirement", FAILED, "Not accepted")
+    else:
+        count = len(result.brief.features)
+        requirement = ProgressStep("Requirement", DONE, f"{count} feature{'s' if count != 1 else ''}")
+
+    if result.ok:
+        plan = ProgressStep("Plan", DONE, f"{len(result.plan.steps)} steps")
+    elif result.brief is not None:
+        plan = ProgressStep("Plan", FAILED, "Planner failed")
+    else:
+        plan = ProgressStep("Plan", PENDING)
+
+    approval, files = ProgressStep("Approval", PENDING), ProgressStep("Generated files", PENDING)
+    if result.ok and context is not None:
+        approved = any(a.checkpoint == "A" and a.decision == APPROVED for a in context.approvals)
+        developer_failed = any(e.agent == "Developer" and e.status == EVENT_FAILED for e in context.events)
+        if context.status == AWAITING_APPROVAL:
+            approval = ProgressStep("Approval", CURRENT, "Waiting for you")
+        elif context.status == CANCELLED:
+            approval = ProgressStep("Approval", FAILED, "Rejected")
+        elif approved:
+            approval = ProgressStep("Approval", DONE, "Approved")
+        if context.files:
+            files = ProgressStep("Generated files", DONE, f"{len(context.files)} files")
+        elif developer_failed:
+            files = ProgressStep("Generated files", FAILED, "Not generated")
+    return [requirement, plan, approval, files]
 
 
 def format_duration(ms: float) -> str:
