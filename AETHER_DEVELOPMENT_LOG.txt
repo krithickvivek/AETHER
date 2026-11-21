@@ -5,145 +5,147 @@ Project: AETHER (AI-Enabled Team for Hierarchical Engineering and Reasoning)
 Rule (owner, 2026-11-21): after every task this file is OVERWRITTEN with only the
 latest status and the latest task's results. Nothing is appended. Never include
 secrets. Planned features are kept separate from implemented ones.
-Earlier records are in git history (old-format Tasks 003-007: commit 5b6cd51; the
-Task 008 log: commit baea867).
+Earlier records are in git history (old-format Tasks 003-007: commit 5b6cd51; later
+task logs in the commits that followed).
 
 Last updated: 2026-11-21
-Current task: TASK 009 - PHASE 1: Developer write-failure and Workspace warning tests
+Current task: TASK 010 - PHASE 1: application configuration and persistence
+              error-path tests
 Task state: IMPLEMENTED AND VERIFIED. Awaiting the owner's review. Not staged, not
-            committed, not pushed. Task 010 not started.
+            committed, not pushed. Task 011 not started.
 
 --------------------------------------------------------------------------------
-1. TASK 009 PROMPTS (summary)
+1. TASK 010 PROMPTS (summary)
 --------------------------------------------------------------------------------
-Prompt 1 (inspection and planning only): inspect the Developer write-failure path
-(developer.py 84-85), the Workspace error message (app.py 261-264) and the warning
-paths (app.py 321, 348-353); propose deterministic tests; change nothing.
-Prompt 2 (approval): implement groups A (Developer write-failure unit tests), B
-(Workspace error-message AppTests) and C (Workspace warning AppTests) exactly as
-proposed; DEFER group D to Task 010; keep the partial-write behaviour unchanged and
-pin its missing error message in a test, documented as known issue K38; do not
-modify application code or existing tests; reuse the Task 008 helpers without new
-Streamlit internals; temporary directories only, no real user data, no network, no
-generated-code execution; run the new modules first, then the full suite; verify
-coverage of developer.py 68 and 84-85 and app.py 261-264, 321 and 348-353; update
-this log; do not stage, commit or push.
+Prompt 1 (inspection and planning only): inspect app.py 111-113 (run_store()
+configuration error), 133-134 (history-save OSError) and 382 (render_files with no
+store); propose deterministic tests; change nothing.
+Prompt 2 (approval): implement all 9 proposed tests in tests/test_app_error_paths.py;
+document the transient invalid-runs-folder error as known issue K39 and leave the
+behaviour unchanged; do not modify application code or existing tests; temporary
+directories, mocks and isolated data; never create files or directories inside
+AETHER's own folder in the invalid-path tests; restore environment variables
+reliably; run the 9 tests, then the full suite (plain OK, no skips); coverage;
+mutation checks on a scratch copy only; replace this log; do not stage, commit or
+push.
 
 --------------------------------------------------------------------------------
 2. FILES (whole task)
 --------------------------------------------------------------------------------
-  Created:  tests/test_developer_failures.py   (6 tests, group A)
-            tests/test_workspace_page.py       (6 tests, groups B and C)
-  Modified: AETHER_DEVELOPMENT_LOG.txt         (refreshed)
+  Created:  tests/test_app_error_paths.py   (9 tests)
+  Modified: AETHER_DEVELOPMENT_LOG.txt      (refreshed)
   Deleted:  none
   Application code (app.py, aether/, aether_ui/, main.py) and all existing tests:
-  unchanged (git status shows only the two new test files and this log). Nothing
-  staged, committed or pushed.
+  unchanged. git status shows only the new test file and this log. Nothing staged,
+  committed or pushed. No folder was created inside AETHER's own folder.
 
 --------------------------------------------------------------------------------
-3. WHAT WAS IMPLEMENTED
+3. WHAT WAS IMPLEMENTED (tests/test_app_error_paths.py, 9 unique tests)
 --------------------------------------------------------------------------------
-Write failures are produced with the Workspace's real limits wherever possible
-(mock.patch.object on workspace.MAX_FILE_BYTES and workspace.MAX_FILES, both read at
-call time) plus one injected OSError for the disk-error branch. Temporary folders
-only; no real user data; the network is blocked in the UI tests; generated code is
-never run.
-
-Group A - tests/test_developer_failures.py (DeveloperWriteFailureTests, 6):
-  1. first file refused (MAX_FILE_BYTES=10): run FAILED at the Developer, detail
-     starts "Could not write project files:" and mentions "(limit 10)", no file
-     records, project_type still "calculator", nothing on disk;
-  2. a later file refused (MAX_FILES=1): FAILED, "maximum of 1 files", the one
-     already-written file stays on disk and in context.files with a matching
-     checksum and size (pinned current behaviour: the partial project is kept);
-  3. disk error on the second write (injected OSError "disk full"): detail exactly
-     "Could not write project files: disk full", the loop stopped after two
-     attempts, one file kept;
-  4. the failed run is saved and reloaded with its partial files, project_type,
-     FAILED status and final Developer event, with no load warnings;
-  5. an unexpected error (RuntimeError) is not swallowed by the Developer: called
-     directly it raises; through the Manager it is recorded as "RuntimeError: boom";
-  6. no brief or plan (developer.py 68): FAILED "There is no approved plan to build
-     from.", no updates, and no run folder created.
-Group B - tests/test_workspace_page.py (DeveloperFailureMessageTests, 3):
-  7. first-file failure: exactly one error "The Developer could not generate this
-     project. Could not write project files: ... (limit 10)", no file selector, no
-     approve/reject buttons, nothing written;
-  8. PINNED (K38) partial write failure: the page lists the partial file (one-option
-     selector) but shows NO error anywhere (no st.error; the failure message is not
-     in markdown, warnings, info, success or st.html); the failure IS recorded in the
-     run's events. Update this test when the message is added;
-  9. a failed run reopened from the History page shows the same error plus the
-     "Showing a saved run" banner (uses the Task 008 open_page helper).
-Group C - tests/test_workspace_page.py (WorkspaceWarningTests, 3):
-  10. partial fit ("A to-do website with login and a public API"): both warnings
-      ("This template does not include: API. Those parts of the plan will not be
-      built." and "No generated file carries out plan step(s) <n>.", with the step
-      numbers taken from preview(context), not hard-coded), the "Partial fit" badge,
-      "<n> files planned", approve enabled, nothing written;
-  11. negative control (a fully fitting to-do requirement): neither warning, badge
-      "Fits the requirement";
-  12. ambiguous ("A to-do list for library staff"): badge "Ambiguous: more than one
-      project type", "No files planned", a warning naming both project types,
-      approve disabled, override disabled until acknowledged, reject enabled, nothing
-      written.
-Streamlit internals: NONE added. The badge tests reuse the Task 008 helper html_text
-(reads st.html via element.proto.body) and the History test reuses open_page; both
-live in tests/test_history_page.py. The imports work under discover and under
-python -m unittest tests.test_workspace_page (fallback import).
-Test counts: 12 unique tests = 6 + 3 + 3.
+Base class ErrorPathTestCase extends the Task 009 WorkspacePageTestCase (temporary
+history and run folders, blocked network, submit/approve helpers). No new Streamlit
+internals: toasts are read through AppTest's public app.toast; the History test
+reuses the Task 008 open_page helper. Safety: INVALID_RUNS_FOLDER is a path inside
+AETHER's own folder used only as the VALUE of AETHER_RUNS_DIR (RunStore resolves but
+never creates it); every test asserts the folder does not exist before and after
+(a cleanup assertion), nothing is deleted by the tests; environment variables change
+only through mock.patch.dict with cleanup, and setUpClass/tearDownClass verify the
+AETHER_* variables are back to their original values.
+A. Invalid runs folder - app.py 111-113 (InvalidRunsFolderTests, 3):
+   1. page load with an invalid folder shows no error (the check runs only when the
+      folder is needed);
+   2. Generate: exactly one error "Generated projects cannot be saved: Runs cannot be
+      stored inside AETHER's own folder ...", the plan IS generated (result ok) and
+      saved to history with run_id None, context is None, no approve/reject buttons,
+      the temporary runs folder is not even created;
+   3. PINNED (K39): after any later rerun the error is gone, the plan stays on screen
+      ("Plan generated by RuleBasedPlanner"), nothing on the page explains why, and
+      there is still nothing to approve.
+B. History-save OSError - app.py 133-134 (HistorySaveErrorTests, 3):
+   4. a REAL OSError (the history file's parent is a regular file; no mocks): exactly
+      one toast "The plan was generated but could not be saved to history." and no
+      "Plan saved to history" toast, result ok, no error element, blocker file
+      untouched, history file not created;
+   5. the run is still usable: checkpoint approve enabled, approving generates the 4
+      calculator files (success message, status completed);
+   6. control: a working history shows exactly "Plan saved to history" (proves the
+      toast assertions are meaningful) and one saved entry.
+C. Runs folder becomes invalid after a run is on screen - app.py 382 and related
+   (RunsFolderBecomesInvalidTests, 3). SIMULATED: AETHER_RUNS_DIR is changed between
+   reruns; this cannot happen in normal use because a run only exists when the folder
+   was valid, so these document a defensive branch:
+   7. completed run: the error is shown again, the file selector is gone
+      (render_files returned early), the context stays "completed", files on disk
+      unchanged;
+   8. run at the checkpoint: the error shows, approve AND reject are disabled, status
+      stays awaiting_approval, nothing written;
+   9. opening a completed run from History with an invalid folder: load_context
+      catches the ValueError from RunStore(), so the run opens from the saved result
+      only (banner, context None, no file list), history file unchanged.
 
 --------------------------------------------------------------------------------
 4. TEST COMMANDS AND RESULTS (actual)
 --------------------------------------------------------------------------------
-  python -m unittest tests.test_developer_failures tests.test_workspace_page
-      Ran 12 tests in 3.8 s ... OK
-  python -m unittest discover -s tests   (run under coverage)
-      Ran 341 tests in 48.7 s ... OK    (329 before Task 009 + 12 new). The summary
-      is plain "OK" with no "skipped=" suffix: no tests were skipped.
+  python -m unittest tests.test_app_error_paths
+      Ran 9 tests in 3.7 s ... OK
+  python -m unittest discover -s tests   (plain, two runs on the final tree)
+      Ran 350 tests in 40.7 s ... OK     Ran 350 tests in 37.0 s ... OK
+      (341 before Task 010 + 9 new). Plain "OK" with no "skipped=" suffix.
+  python -m coverage run -m unittest discover -s tests  (clean run)
+      Ran 350 tests in 51.3 s ... OK (plain, no skips)
   Coverage (coverage.py 7.17.4; data file in the scratch folder; --omit="tests/*"):
-      application code: 1,640 statements, 42 missed, 97%   (was 54 missed)
-      with tests included: 4,737 statements, 87 missed, 98%
-      developer.py: 100% (was 96%)      app.py: 313 statements, 21 missed, 93%
-                                         (was 30 missed, 90%)
-  TARGET LINES: ALL COVERED. developer.py 68 and 84-85; app.py 261-264, 321, 348-349
-  and 352-353 (and the rest of 348-353) no longer appear in the missing list.
-  MUTATION CHECKS (done on a COPY of the project in the scratch folder, because
-  application code must not be modified; the real files were not touched):
-      unmodified copy ................................... 12 tests OK
-      Developer catches only WorkspaceError (not OSError) . test 3 fails
-      Developer drops the partial file records ........... 4 tests fail (2, 3, 4, 8)
-      app hides the Developer failure message ............ tests 7 and 9 fail
-      app drops the unsupported-feature warning .......... test 10 fails
-      app drops the uncovered-steps warning .............. test 10 fails
-      ambiguous badge label changed ...................... test 12 fails
-      Developer skips the no-plan guard .................. test 6 errors
-  Not mutation-checked: the K38 pin (test 8) against a future error message, the
-  negative-control test 11, and tests 1 and 5.
+      application code: 1,640 statements, 36 missed, 98%   (was 42 missed, 97%)
+      with tests included: 4,889 statements, 88 missed, 98%
+      app.py: 313 statements, 15 missed, 95%               (was 21 missed, 93%)
+  TARGET LINES ALL COVERED: app.py 111-113, 133-134 and 382 no longer appear in the
+  missing list.
+  MUTATION CHECKS (on a COPY of the project in the scratch folder only; the real
+  application files were never touched). M0 = unmodified copy: 9 tests OK.
+      M1 run_store shows no error ......................... 4 tests fail (2, 3, 7, 8)
+      M2 run_store catches KeyError instead of ValueError . 4 tests fail (2, 3, 7, 8)
+      M3 history-failure toast text changed ............... test 4 fails
+      M4 history OSError not caught ....................... tests 4 and 5 fail
+      M5 render_files no-store guard removed .............. test 7 fails
+      M6 generate keeps the context without a store ....... tests 2 and 3 fail
+      M7 load_context no longer catches ValueError ........ test 9 fails
+      M8 a bug creates the invalid folder (inside the copy) 6 tests fail; the
+         folder-must-not-exist guard works (after the first creation every later test
+         fails its setUp precondition, so the leftover is noticed)
+  Not mutation-checked: the K39 pin against a future fix (it would fail by design),
+  and tests 1 and 6 (control tests).
+  FLAKY FULL-SUITE RUNS (see K40): two earlier full runs under coverage failed in tests
+  I did not change, so the clean run above is the one reported.
 
 --------------------------------------------------------------------------------
 5. FINDINGS AND KNOWN ISSUES
 --------------------------------------------------------------------------------
-  K38 (NEW, behaviour unchanged by owner decision) If the Developer fails AFTER
-      writing some files, the Workspace page shows the partial file list but no error
-      message: render_development shows the failure message only when no files were
-      written. The run status is "failed" and the failure appears only in the progress
-      strip and the activity log. The partial files also stay on disk (no cleanup).
-      Pinned by test 8 and, for the disk side, test 2. The "Plan generated by
-      RuleBasedPlanner" success banner also stays visible after a failed build (it
-      reports the plan, not the build). Candidate fix for a later task: show the
-      failure whenever a Developer FAILED event exists.
-  K35 (O1) A saved run whose context cannot be loaded still opens from its saved
-      result with no message that the files and approval state are gone.
-  K36 (O2) A damaged history.json looks like "No saved runs yet".
-  K34 Tests depend on Streamlit internals (_page_hash, calc_hash, proto.body) only in
-      the Task 008 helpers; an upgrade fails them loudly (proved for calc_hash and
-      _page_hash).
-  K37 The real-data check compares metadata only.
-  Limitations of the Task 009 tests: write failures are simulated (limits and one
-  injected OSError), not a real full disk; the badge assertions read st.html through
-  html_text and depend on the badge markup (class "ae-status") and the exact warning
-  wording; AppTest only (no browser); only Streamlit 1.57 and Python 3.11.9.
+  K39 (NEW, behaviour unchanged by owner decision) With an invalid runs folder
+      (inside AETHER's own folder), the error "Generated projects cannot be saved"
+      appears only in the run in which Generate was clicked. On the next rerun it is
+      gone; the generated plan remains (and is saved to history with no run id) but
+      there is no way to approve it and nothing explains why. Pinned by test 3.
+      Candidate fix for a later task: keep the error, or disable/replace the
+      checkpoint with an explanatory message, whenever the store is invalid.
+  K40 (NEW) Timing-sensitive tests can fail on a loaded or suspended machine. Two
+      full-suite runs under coverage failed in code from earlier tasks, not in the
+      Task 010 tests: (a) a run of 150.9 s ended with 1 error (the test was not
+      recorded; coverage showed app.py 348-353 uncovered, which suggests an AppTest
+      timeout in the Task 009 partial-fit test); (b) a run that reported 9,346 s of
+      elapsed time (the computer was apparently suspended) failed
+      test_template_smoke todo_web "the generated tests timed out". Three later full
+      runs on the unchanged tree passed (40.7 s, 37.0 s, 51.3 s). Cause not proven;
+      mitigation candidates: larger or load-aware timeouts, or running the smoke
+      tests with a longer limit. No change was made.
+  Carried over (behaviour unchanged by owner decision): K35 (a saved run whose
+  context cannot be loaded opens with no message), K36 (a damaged history.json looks
+  like an empty history), K38 (a partial write failure shows the partial file list
+  with no error message). K34 the tests depend on Streamlit internals only in the
+  Task 008 helpers (_page_hash, calc_hash, proto.body; they fail loudly). K37 the
+  real-data check compares metadata only.
+  Limitations of the Task 010 tests: tests 7-9 simulate a folder becoming invalid
+  mid-session; the messages are asserted as written; the history failure is a real
+  OSError on Windows only (FileExistsError/NotADirectoryError elsewhere not run);
+  AppTest only (no browser); Streamlit 1.57 and Python 3.11.9 only.
   Older open items: K28 smoke-test isolation is best effort, not a sandbox; K29 only
   the child process is killed on timeout; K30 the suite takes 40-70 s; K31 templates
   are fixed content; K32 coverage should omit tests/ and use branch coverage (a
@@ -152,21 +154,16 @@ Test counts: 12 unique tests = 6 + 3 + 3.
 --------------------------------------------------------------------------------
 6. CURRENT PROJECT STATE
 --------------------------------------------------------------------------------
-Done: Phase 0 (Tasks 003-007: schema versioning, feature-detection split, single
-Manager execution path, template smoke tests, coverage analysis) and Phase 1 so far
-(Task 008 History page tests, pushed as baea867; Task 009 Developer/Workspace failure
-and warning tests, uncommitted).
-Tests: 341 passing. Application coverage 97% (42 missed statements).
+Done: Phase 0 (Tasks 003-007) and Phase 1 so far: Task 008 (History page tests),
+Task 009 (Developer write-failure and Workspace warning tests), Task 010 (this task,
+uncommitted). Tests: 350 passing. Application coverage 98% (36 missed statements).
 
-Remaining coverage gaps (deferred; "group D" is Task 010):
-  app.py 111-113 (run_store ValueError), 133-134 (history-save OSError toast), 382
-  (render_files with no store)  <- Task 010
+Remaining coverage gaps:
   app.py 56-58, 67-70, 76-77, 188-189, 408-410, 415 (home-path display, example
   button, invalid planner setting, technical-details expander, file viewer
-  missing/changed)
-  main.py 25-26, 52-54, 70, 75; ollama_planner.py 236, 245, 358; history.py 31-32;
-  theme.py 234-235, 302, 437; agents.py 46, 68; config.py 32; schema.py 70;
-  workflow.py 243.
+  missing/changed); main.py 25-26, 52-54, 70, 75; ollama_planner.py 236, 245, 358;
+  history.py 31-32; theme.py 234-235, 302, 437; agents.py 46, 68; config.py 32;
+  schema.py 70; workflow.py 243.
 
 Architecture (unchanged): blackboard pattern (ProjectContext + AgentResult applied
 only by the Manager); Checkpoint A approval then pause/resume; file persistence under
@@ -181,7 +178,8 @@ strategies, Docker sandbox, Live Agent Collaboration view.
 --------------------------------------------------------------------------------
 7. NEXT STEP
 --------------------------------------------------------------------------------
-Owner review of Task 009. Then, as decided: Task 010 = group D (app.py 111-113,
-133-134, 382). Other candidates: decide K35/K36/K38 (add the missing messages), a
-.coveragerc (omit tests/, branch coverage), main.py CLI edge-case tests. No React
-work yet.
+Owner review of Task 010. Candidate next tasks (owner to choose): decide K35/K36/
+K38/K39 (add the missing user messages; these are behaviour changes); address K40
+(timeouts); the remaining small coverage gaps (main.py CLI edge cases, Ollama planner
+bad-output paths, history.py OSError, file viewer changed/missing); a .coveragerc
+(omit tests/, branch coverage). No React work yet.
