@@ -1,0 +1,1341 @@
+================================================================================
+AETHER DEVELOPMENT LOG
+AI-Enabled Team for Hierarchical Engineering and Reasoning
+================================================================================
+
+PURPOSE
+This is the permanent development record for AETHER. THE LOG IS APPEND-ONLY
+(authoritative rule, from the owner's Task 005 prompt, reaffirmed in Task 006):
+  * Never delete, rewrite or overwrite an earlier task record.
+  * After each task, update the CURRENT STATUS section in place, then APPEND a new
+    TASK entry at the end of the file.
+  * This file currently holds Task 003, Task 004, Task 005 and Task 006 (and every
+    later task will be appended). Tasks 001-002 (the architecture inspection and
+    the log creation) were removed earlier at the owner's request and are not
+    part of this file. The git history of the project is unaffected.
+
+FORMAT HISTORY (superseded instructions, kept for the record; they no longer apply)
+  - Task 002 (2026-11-20): append-only log with Task 001-002 records.
+  - Between Tasks 003 and 004 (2026-11-20): the owner asked for the file to be
+    rewritten with the latest content only; Tasks 001-002 were removed then.
+  - Task 004 prompt (2026-11-20): preserve Task 003 and add Task 004 after it.
+  - Task 005 prompt (2026-11-20): append-only again (the rule above).
+  - Task 006 prompt (2026-11-20): the append-only rule must be unambiguous; this
+    header and RULES were clarified accordingly (no task record was changed).
+
+RULES
+ 1. APPEND-ONLY: update CURRENT STATUS in place and append a new TASK entry after
+    every development task. Never erase or overwrite earlier task records.
+ 2. Record the task's exact prompt, inspection findings, implementation details
+    and decisions.
+ 3. Record files created, modified or deleted.
+ 4. Record exact test commands, actual results, errors, fixes and validation.
+ 5. Keep planned features separate from implemented features.
+ 6. Keep current architecture, completed and pending features, known issues
+    and the recommended next task up to date in CURRENT STATUS.
+ 7. Never include API keys, passwords, tokens or other secrets.
+
+################################################################################
+# CURRENT STATUS
+# Last updated: 2026-11-21 (after Task 007)
+################################################################################
+
+LATEST DEVELOPMENT PROGRESS
+  - Task 007 (2026-11-21): PHASE 0 continued (K15). Coverage gap analysis only; no
+    code or test changed. coverage.py (installed by the owner) reports 97% over
+    4,130 statements, but 31 of the 130 misses are inside tests/; application code
+    alone is 94% (1,640 statements, 99 missed; 93% with branches). 68 of the 99 are
+    in app.py (History and About pages, Workspace warning/error paths). Tests to add
+    are awaiting the owner's approval.
+  - Task 006 (2026-11-20): PHASE 0 continued (K15). New tests/test_template_smoke.py
+    (38 tests) generates each of the three templates through the real pipeline
+    and checks structure and syntax, then runs each generated project's OWN test
+    suite in an isolated subprocess: calculator 14/14, to-do 25/25, library 24/24
+    passed (read from the actual child-process output). No application code was
+    changed. Full suite: 303 tests, all passing (265 + 38 new). Coverage tooling
+    is NOT installed and awaits the owner's approval.
+  - Task 005 (2026-11-20): PHASE 0 continued. The two Manager execution paths
+    were unified: ManagerAgent.run_pipeline() is now the only orchestration
+    implementation. ManagerAgent.run() (plan only) is a thin wrapper that
+    delegates to it, and the command-line app (main.py, itself unchanged) goes
+    through it. CLI output verified byte-identical to before in 6 scenarios.
+    Full suite: 265 tests, all passing (229 + 36 new).
+  - Task 004 (2026-11-20): PHASE 0 continued. Feature detection decoupled from
+    the Manager into the new aether/feature_detection.py (K4 import tangle
+    removed). Manager, OllamaPlanner and template selection use it directly;
+    old import locations still work. Behaviour verified identical to the
+    previous code. Full suite: 229 tests, all passing (205 + 24 new).
+  - Task 003 (2026-11-20): PHASE 0 started. Persistence schema versioning and
+    backward-compatible loading implemented (new aether/schema.py; versioned
+    context.json and history.json entries). Full suite: 205 tests, all passing
+    (155 original + 50 new). Streamlit UI, agent flow and storage file layout
+    unchanged.
+  - Owner approved decisions D1-D4 (see OWNER-APPROVED DECISIONS below). No
+    SQLite, React, FastAPI, Docker, new agents or orchestration code exists yet.
+  - Awaiting the owner's approval of the Task 007 test recommendations before Task 008.
+
+--------------------------------------------------------------------------------
+CURRENT ARCHITECTURE  (as verified in code on 2026-11-20; git HEAD 1176dd9)
+--------------------------------------------------------------------------------
+Stack: Python 3.11, Streamlit 1.57 web UI, standard library otherwise.
+Size: about 5,300 lines of Python, 303 test methods (16 test files).
+
+Layout:
+  app.py                 Streamlit UI (Workspace, History, About pages), 542 lines
+  main.py                CLI, planning only (uses the older Manager.run() path)
+  aether/                Core library, no UI dependency
+    models.py            TaskBrief, PlanStep, Plan
+    feature_detection.py (Task 004) FEATURE_KEYWORDS, EXTRA_KEYWORDS, FEATURES,
+                         detect_features(), mentions_feature(). Depends only on
+                         re and aether.models.
+    manager.py           ManagerAgent: run_pipeline (THE execution path),
+                         approve, resume (calls detect_features). run() is a
+                         thin plan-only wrapper over run_pipeline (Task 005).
+                         Not an Agent subclass. Re-exports detect_features and
+                         FEATURE_KEYWORDS for compatibility.
+    agents.py            Agent ABC, AgentResult, Attempt, PlannerAgent (adapter)
+    planner.py           Planner ABC, RuleBasedPlanner, BASE_STEPS, FEATURE_STEPS
+    ollama_planner.py    OllamaPlanner (local llama3.2:1b, localhost only) and
+                         output validation (uses mentions_feature from
+                         feature_detection; re-exports it for compatibility)
+    fallback.py          FallbackPlanner (primary -> fallback, records reason)
+    config.py            build_planner() from AETHER_PLANNER
+    schema.py            (Task 003) SCHEMA_VERSION, SchemaError, upgrade() +
+                         MIGRATIONS registry, validated build helpers shared by
+                         every loader
+    context.py           ProjectContext, AgentEvent, FileRecord, Approval,
+                         RunStore (context.json + events.jsonl per run); loading
+                         is versioned and validated
+    developer.py         DeveloperAgent, Checkpoint A, template generation
+    workspace.py         Path-safe file writer (7 suffixes, 100 KB/file, 50 files)
+    templates/           3 templates (calculator, todo_web, library_api) and the
+                         template-fit rules
+  aether_ui/             workflow.py (RunResult/Stage view model), history.py
+                         (.aether/history.json, max 25), theme.py (CSS/components)
+  tests/                 16 unittest files (unittest; includes test_template_smoke.py,
+                         which runs generated projects in isolated subprocesses)
+
+Execution flow (single path since Task 005; CLI plan-only and the web app both use it):
+  UI/CLI -> start_project() -> ManagerAgent.run_pipeline(requirement,
+  [PlannerAgent, DeveloperAgent], store)
+    1. understand(): requirement -> TaskBrief (keyword feature detection)
+    2. Agents run strictly in list order. An agent with a `checkpoint` pauses the
+       run (status awaiting_approval) until approve() + resume().
+    3. Agent returns AgentResult; only the Manager applies whitelisted
+       `updates` to ProjectContext and records AgentEvents; saves after each step.
+    4. An exception or FAILED result marks the run failed and later agents skipped.
+    5. Resume skips agents that already have a DONE event, keyed by (name, action).
+
+Agent communication:
+  Blackboard pattern. Agents never call each other. They read a shared
+  ProjectContext and return an AgentResult. Handoff objects: TaskBrief, Plan,
+  FileRecord. There are NO agent-to-agent messages, delegation records or
+  streaming events. Events are recorded after an agent finishes. The STARTED
+  status constant exists but is never emitted.
+
+Persistence (file-based; SQLite is approved but NOT started):
+  ~/AETHER-projects/<run_id>/{context.json, events.jsonl, workspace/}
+  (events.jsonl is rewritten in full on every save). A second, duplicate store,
+  .aether/history.json, holds RunResult copies (max 25). No locking, no database.
+  Schema versioning (Task 003): every saved context.json, history entry and
+  history result carries "schema_version" (currently 1). Records with no version
+  are version 0 ("legacy") and load unchanged. Loading goes through
+  schema.upgrade(), which applies registered migrations (kind, from_version) one
+  version at a time; a newer version is refused (never overwritten). The version
+  lives only in saved data, not on the in-memory dataclasses. Unknown top-level
+  run fields are kept and written back; unknown nested fields are ignored with a
+  warning. events.jsonl keeps its existing format (not versioned per line); it is
+  derived from context.json. Version 1 = version 0 layout + the marker.
+
+--------------------------------------------------------------------------------
+COMPLETED / IMPLEMENTED FEATURES  (verified in code)
+--------------------------------------------------------------------------------
+  - Manager agent: requirement cleanup, keyword feature detection (authentication,
+    database, web_ui, api), pipeline coordination, checkpoint approve/reject/resume
+  - Planner: rule-based planner; experimental local Ollama planner with strict
+    validation; automatic fallback with the reason recorded
+  - Developer: template-based generation (3 templates) after human approval
+    (Checkpoint A); SHA-256 and plan-step coverage per file; never runs code
+  - Conservative template selection with ambiguity/poor-fit detection and an
+    explicit, acknowledged, logged override
+  - Workspace path sandbox, atomic writes, size and count limits
+  - Run persistence and reopenable history
+  - Streamlit UI with themes, progress indicator, file viewer, plan download
+  - Command-line planner
+  - Offline, deterministic test suite (303 test methods)
+  - Generated-template smoke tests (Task 006): each template is generated through
+    the real plan/approve/Developer flow into a temporary folder; expected files,
+    path containment, checksums, syntax and absence of dependencies/network modules
+    are checked; each project's own tests are executed in an isolated child process
+    (current interpreter, -I -B, stripped environment, timeout, socket guard); the
+    calculator CLI is run; the servers are imported but never started; failure,
+    timeout, no-tests and cleanup behaviour is tested
+  - Single execution path (Task 005): ManagerAgent.run_pipeline() is the only
+    place agents are run; ManagerAgent.run() delegates to it with a planner-only
+    agent; CLI behaviour and output unchanged
+  - Feature detection module (Task 004): aether/feature_detection.py holds the
+    four-feature (authentication, database, web_ui, api) keyword detection for
+    requirements and the plan-step matching used by the AI-plan checks and
+    template coverage mapping; no import cycle; behaviour identical to before
+  - Persistence schema versioning and backward-compatible loading (Task 003):
+    versioned context.json and history.json; legacy records still load; clear
+    SchemaError messages naming the run and field; newer versions refused;
+    unreadable history entries skipped but never deleted; damaged history file
+    copied aside before being replaced; RunStore.load_events() validated reader
+    for events.jsonl; shared migration registry designed for reuse by SQLite
+
+--------------------------------------------------------------------------------
+PENDING FEATURES  (PLANNED ONLY - none of these exist yet)
+--------------------------------------------------------------------------------
+  Platform vision: Engineering Orchestration Platform for Software Engineering
+  (SE), Machine Learning Engineering (MLE) and Hybrid engineering.
+  - Expanded agent ecosystem: Reviewer, Tester, Verifier, Documentation agents;
+    MLE agents (dataset intelligence, ML experimentation, model evaluation)
+  - Orchestration strategies: sequential (exists as a flat list only), parallel,
+    hierarchical, conditional
+  - Adaptive task allocation
+  - Agent performance tracking and feedback
+  - Controlled self-correction and error recovery
+  - React frontend with Python backend API
+  - MANDATORY: real-time Live Agent Collaboration visualization showing actual
+    agent-to-agent messages, task delegation, execution events and progress
+  - Sandboxed code execution (needed by Tester and ML experiments)
+  - Domain classification (SE / MLE / hybrid)
+
+--------------------------------------------------------------------------------
+KNOWN ISSUES / TECHNICAL DEBT  (K1-K15 from the earlier architecture inspection)
+--------------------------------------------------------------------------------
+  K1  Only one execution strategy: a flat, hard-coded agent list; no task or
+      dependency model; TaskBrief has only requirement + features.
+  K2  No agent registry or capability metadata; (name, action) free strings are
+      resume keys; project_agents() rebuilds a hard-coded list on resume.
+  K3  RESOLVED in Task 005: one orchestration implementation (run_pipeline);
+      Manager.run() is a thin compatibility wrapper.
+  K4  PARTLY RESOLVED in Task 004: the coupling is gone (feature detection now
+      lives in aether/feature_detection.py; manager, ollama_planner and templates
+      no longer import each other for it). STILL OPEN: detection is keyword-only
+      and SE-only (no ML features, no domain classification: later phase).
+  K21 (Task 004) Compatibility re-exports remain: manager.detect_features,
+      manager.FEATURE_KEYWORDS, ollama_planner.mentions_feature,
+      ollama_planner.FEATURE_KEYWORDS/EXTRA_KEYWORDS, templates.FEATURES. They
+      can be removed once nothing imports the old locations (only
+      tests/test_planner.py imports detect_features from aether.manager).
+  K22 (Task 004) FEATURE_STEPS (planner.py), FEATURE_HINTS and FEATURE_WEIGHTS
+      (ollama_planner.py), FEATURE_LABELS (aether_ui/workflow.py) and the
+      template `supports` sets are still separate per-feature tables keyed by the
+      same four names; adding a feature still means editing several files.
+  K23 (Task 004) Detection quirk, unchanged on purpose: keywords match as
+      written, so "log  in" with two spaces is not detected by detect_features
+      itself (the Manager collapses whitespace first).
+  K24 (Task 005) Manager.run() swaps self.log temporarily to drop the pipeline's
+      own "[Manager] Planner: done (...)" line and print the original "Received a
+      plan with N steps" line instead (to keep the CLI output unchanged). It
+      restores the log in a finally block, but the swap is not thread-safe and
+      matches a message prefix ("[Manager] <agent name>: "). Remove it together
+      with the wrapper once the CLI is allowed to show the pipeline wording.
+  K25 (Task 005) A plan-only run() builds a throw-away context: its events are not
+      kept or saved (as before, nothing was recorded). The CLI therefore has no
+      run history or events.
+  K26 (Task 005) Resume still skips finished agents by (name, action) strings and
+      the web app's project_agents() still rebuilds a hard-coded agent list with a
+      fresh RuleBasedPlanner (K2 stays open; behaviour is correct today because the
+      Planner step is already DONE and is skipped, and Task 005 tests prove it).
+  K27 (Task 005) Not verified: the Streamlit app was not opened in a browser (only
+      the existing AppTest tests cover it); the CLI run with the real local Ollama
+      model was captured once but its (non-deterministic) output was not compared.
+  K5  UI tightly coupled to orchestration (app.py calls decide_plan, RunStore,
+      Workspace); RunResult/Stage/TracingPlanner is a second shadow view of a run.
+  K6  No retry, repair or re-plan: one failure ends the run.
+  K7  No execution environment inside AETHER's product flow (the Developer never
+      runs code; no Tester agent). PARTLY ADDRESSED in tests only (Task 006): the
+      smoke tests run generated code in isolated subprocesses with timeouts, which
+      is NOT a sandbox (see K28). Docker (D2) remains the planned sandbox.
+  K8  Workspace limits/suffixes block ML and frontend work (no .ipynb, .csv,
+      .yaml, .toml, .js/.jsx/.ts; 100 KB/file; 50 files).
+  K9  Single hard-coded LLM provider and one allowlisted 1B model; no provider
+      abstraction; no tool use.
+  K10 Checkpoint "A" is hard-coded in manager, developer and UI progress code.
+  K11 Event log is post-hoc, rewritten in full, not streamable; STARTED unused.
+  K12 Two sources of truth for history (history.json vs context.json).
+      (still open; to be resolved by the SQLite store, D4)
+  K13 RESOLVED in Task 003 (schema versioning and tolerant loading).
+  K14 No locking or concurrency support; single user, single machine by design.
+  K15 PARTLY RESOLVED in Task 006: generated template code is now executed in
+      tests (tests/test_template_smoke.py). STILL OPEN: no coverage tooling
+      (coverage.py not installed; awaiting the owner's approval to install);
+      main.py is covered only by the Task 005 CLI tests; no concurrency or
+      streaming tests. (Schema-migration tests exist: tests/test_schema.py.)
+  K28 (Task 006) Smoke-test isolation (isolated mode, stripped environment, socket
+      guard, timeout, temporary folder) is best effort for the three known
+      templates. It is not a security boundary: generated code could still read
+      files the user can read or use libraries that bypass the guard (the static
+      checks forbid the obvious ones). Arbitrary or AI-written code needs the Docker
+      sandbox (D2, Phase 3).
+  K29 (Task 006) On timeout only the child process is killed, not grandchildren (the
+      templates start none).
+  K30 (Task 006) The full suite takes about 28 s (was about 10 s); a later run on a
+      busier machine took 46 s. The smoke module is about 17 s (the to-do
+      template's password hashing is about 4 s per run).
+  K31 (Task 006) The templates are fixed content: one generated project per
+      template is tested; the servers are never started (no real HTTP test); the
+      calculator's interactive mode and the skip-on-missing-dependency path were not
+      exercised end to end.
+  K16 (Task 003) Only version 0 -> 1 exists, and it is a no-op stamp, so the
+      migration machinery is tested structurally but not against a real data
+      change. The first real format change must add a migration plus a sample
+      record of the old version.
+  K17 (Task 003) Unknown NESTED fields (inside files, events, plan steps, ...) are
+      ignored on load and are NOT written back; only top-level run fields are
+      preserved. Warnings are in ProjectContext.load_warnings but no UI shows them.
+  K18 (Task 003) Legacy history entries and legacy context.json files stay
+      version 0 on disk until re-saved (context) or truncated (history). No bulk
+      upgrade tool. history.json entries that cannot be read are skipped by
+      load_history(), so the History page does not show them (the UI was out of
+      scope); load_history_report() returns the reasons.
+  K19 (Task 003) events.jsonl is still unversioned and rewritten in full.
+  K20 (Task 003) Mutation-checked only the newer-version refusal; other tests were
+      not individually mutation-tested.
+  K32 (Task 007) Coverage is measured with tests included, which overstates the
+      figure (97% vs 94% for application code). A .coveragerc that omits tests/ and
+      enables branch coverage is recommended (needs owner approval to add).
+  K33 (Task 007) A .coverage data file exists in the project root (the owner's run);
+      it is gitignored. Statement coverage only; the owner's run had no branch data.
+  K34 (Task 007) It is not yet verified that Streamlit AppTest can open the
+      History and About pages declared with st.navigation (AppTest has switch_page,
+      which was not tried); the History page tests may need the page function
+      called through a small harness script. To be checked when tests are approved.
+
+--------------------------------------------------------------------------------
+OWNER-APPROVED ARCHITECTURAL DECISIONS (recorded 2026-11-20, with Task 003)
+--------------------------------------------------------------------------------
+  D1  Ollama remains the default local AI provider. Design for cloud provider
+      support in the future (provider abstraction needed; not started).
+  D2  Docker is the preferred isolated execution sandbox (not started).
+  D3  Keep Streamlit operational until the React frontend reaches feature parity.
+  D4  SQLite becomes the central run and history store (not started; Task 003
+      only prepared the versioned data and migration logic it will reuse).
+  Status: all four are DECISIONS ONLY. None is implemented.
+
+--------------------------------------------------------------------------------
+RECOMMENDED NEXT TASK
+--------------------------------------------------------------------------------
+  Finish Phase 0 (owner to confirm; not started): add the tests recommended in the
+  Task 007 gap analysis (highest value first: History page open/clear, Developer
+  write-failure path, Workspace warnings, main.py CLI edge cases) and a .coveragerc
+  (omit tests/, branch coverage). Must keep all 303 tests passing.
+  After Phase 0: Phase 1 (event and message core, agent registry), then SQLite (D4)
+  reusing aether/schema.py.
+
+--------------------------------------------------------------------------------
+TASK REGISTER
+--------------------------------------------------------------------------------
+  Completed:
+    Tasks 001-002 (architecture inspection, log creation): done; entries removed
+                from this file by owner instruction
+    Task 003  2026-11-20  Phase 0: persistence schema versioning (205 tests pass)
+    Task 004  2026-11-20  Phase 0: feature detection decoupled (229 tests pass)
+    Task 005  2026-11-20  Phase 0: unified Manager execution path (265 tests pass)
+    Task 006  2026-11-20  Phase 0: generated-template smoke tests (303 tests pass)
+    Task 007  2026-11-21  Phase 0: coverage gap analysis, no code changes (303 tests pass)
+  Pending:
+    Phase 0 - Foundations (remaining: gap-closing tests, pending owner approval)
+    Phase 1 - Event and message core
+    Phase 2 - API and React shell (with Live Collaboration panel)
+    Phase 3 - Execution sandbox and verification agents
+    Phase 4 - Orchestration strategies and recovery
+    Phase 5 - MLE and hybrid support
+    Phase 6 - Hardening
+
+
+################################################################################
+# LATEST TASK RECORD
+################################################################################
+
+================================================================================
+TASK 003 - 2026-11-20 - PHASE 0: Persistence schema versioning and
+                        backward-compatible data loading
+================================================================================
+
+OWNER-APPROVED DECISIONS (given with this prompt)
+  D1. Ollama remains the default local AI provider; design for future cloud
+      provider support.
+  D2. Docker is the preferred isolated execution sandbox.
+  D3. Keep Streamlit operational until the React frontend achieves parity.
+  D4. SQLite becomes the central run and history store.
+
+PROMPT (faithful record)
+  "We are beginning PHASE 0: FOUNDATIONS of AETHER." The existing implementation
+  must be preserved; 155 test methods must keep passing.
+  TASK 003: Introduce persistence schema versioning and backward-compatible data
+  loading.
+  Objectives: (1) inspect the existing persistence implementation: aether/
+  context.py, ProjectContext serialization, RunStore, context.json, events.jsonl,
+  aether_ui/history.py, .aether/history.json and related tests; (2) introduce
+  explicit schema version metadata for persisted data; (3) implement backward-
+  compatible loading: unversioned records must load, missing optional fields get
+  safe defaults, unknown or malformed fields are handled deliberately, invalid
+  essential data gives clear useful errors, important data is never silently
+  discarded; (4) design the mechanism so a future SQLite migration can reuse the
+  versioned data and migration logic; (5) add focused tests for: unversioned
+  records, current-version records, missing optional fields, unknown schema
+  versions, invalid essential fields, round trips, preservation of existing
+  project data; (6) preserve the existing persistence format; no SQLite now.
+  Strict restrictions: no SQLite; do not modify the Streamlit UI; no React or
+  FastAPI; no new agents or orchestration strategies; do not change the agent
+  execution flow; do not remove or rewrite existing tests; no new dependencies
+  without approval; do not modify unrelated files; do not expose or modify
+  secrets.
+  Validation: run the complete suite; the original 155 must pass plus the new
+  tests; investigate and fix any regression; do not claim completion unless
+  verified.
+  Log requirement: record as TASK 003 with date; faithful prompt; decisions and
+  reasons; every file created/modified/deleted; exact test commands and actual
+  results; errors and fixes; update CURRENT STATUS; record D1-D4; keep
+  implemented and planned separate; preserve all history.
+  Final response: summary, files modified, versioning approach, backward-
+  compatibility results, exact test results, remaining issues, confirmation the
+  log was updated. Do not start Task 004; wait for the owner's review.
+
+INSPECTION FINDINGS (before changes)
+  - ProjectContext.to_dict() was dataclasses.asdict(); from_dict() used strict
+    constructors (PlanStep(**step), FileRecord(**f), ...). Missing required keys
+    raised KeyError/TypeError; unknown keys raised TypeError; no version.
+  - RunStore.save() writes context.json and events.jsonl atomically; load() was a
+    bare json.loads + from_dict. Nothing reads events.jsonl.
+  - history.json is a JSON list of {"id", "result"}; load_history() returned []
+    for any damaged file, and save_run() then OVERWROTE the damaged file with just
+    the new entry (silent data loss). Entries were read with entry["result"] and
+    would crash the History page if malformed.
+  - Real data on this machine, checked read-only: .aether/history.json has 14
+    legacy entries; ~/AETHER-projects has 1 legacy run (11 keys, no version).
+  - Existing tests compare contexts with ==, so the version must not be a
+    dataclass field. manager._UPDATABLE is derived from ProjectContext fields, so
+    any new field would have become agent-updatable.
+  - app.py catches (OSError, ValueError, KeyError) when opening a run, so the new
+    error type had to be a ValueError subclass.
+
+IMPLEMENTATION
+  aether/schema.py (new)
+    - SCHEMA_VERSION = 1; LEGACY_VERSION = 0 (records with no schema_version).
+    - Kinds: context, run_result, history_entry; they share one version number.
+    - SchemaError(ValueError).
+    - MIGRATIONS registry keyed by (kind, from_version); upgrade(data, kind)
+      returns a migrated COPY step by step, refuses newer or malformed versions,
+      refuses a missing migration step, never mutates input.
+    - Validation helpers: check_type (bool is not accepted as a number),
+      check_items, build(cls, data, where, types, warnings) (required fields =
+      dataclass fields without defaults; unknown keys -> warnings),
+      brief_from_dict, plan_from_dict (shared by context and history loaders).
+  aether/context.py (modified)
+    - to_dict(): {"schema_version": 1, ...all fields..., + kept unknown fields}.
+    - from_dict(): upgrade, then validate. Essential: run_id (non-empty text),
+      requirement, created_at. Optional fields default safely (status running,
+      lists empty, brief/plan/project_type None; null lists/notes treated empty).
+      Nested records validated with their location in error messages, e.g.
+      "files[0]: 'size' must be a whole number, not text."
+    - Unknown top-level fields kept in context.unknown_fields (non-field
+      attribute set in __post_init__, so it is outside ==, asdict and the agent
+      whitelist) and written back by to_dict(). Unknown nested fields ignored with
+      a warning. Unrecognised status kept with a warning.
+    - event_from_dict() public; RunStore.load() wraps errors as SchemaError naming
+      the run and file, warns if folder name != record run_id;
+      RunStore.load_events() reads events.jsonl line by line with line numbers.
+  aether_ui/workflow.py (modified; this is the history view-model, not the
+    Streamlit page)
+    - result_to_dict() adds schema_version; result_from_dict(data, warnings=None)
+      upgrades and validates. fallback_reason and run_id remain optional.
+  aether_ui/history.py (modified)
+    - New history entries carry schema_version (entry and result).
+    - _read_raw(); load_history_report() returns (usable upgraded entries,
+      problem descriptions); load_history() keeps its signature and returns only
+      readable entries (so the UI cannot crash on one bad entry).
+    - save_run() keeps all existing entries EXACTLY as saved (even unreadable or
+      newer-version ones) and copies a damaged file to
+      history.json.damaged-<timestamp> before replacing it (fixes the silent data
+      loss described above).
+    - entry_to_result() upgrades/validates and raises SchemaError.
+  Persistence format: preserved. Same files, same keys; the only addition is the
+  schema_version key. events.jsonl format is unchanged.
+
+PROMPT (faithful record)
+  "We are continuing AETHER Phase 0: Foundations. TASK 004: Decouple Feature
+  Detection from the Manager."
+  Context (K4): feature detection lived in aether/manager.py; ollama_planner.py
+  imported it from manager.py; templates imported mentions_feature from
+  ollama_planner.py; this coupled orchestration, planning and template selection;
+  detection is focused on software engineering.
+  Objective: introduce a dedicated feature detection module.
+  Requirements: (1) inspect all existing feature detection functions and callers;
+  (2) create an independent module, preferably aether/feature_detection.py;
+  (3) move the existing logic into it; (4) update Manager, OllamaPlanner and
+  template selection to use it directly; (5) avoid circular imports; (6) preserve
+  the exact existing behaviour for authentication, database, web_ui and api;
+  (7) keep public interfaces compatible where practical; (8) add focused tests
+  including existing keyword behaviour and edge cases; (9) do not introduce ML
+  feature detection or domain classification.
+  Restrictions: do not modify the agent execution flow; no new agents; no
+  orchestration strategies; no SQLite; do not modify the Streamlit UI; no React
+  or FastAPI; do not change template selection decisions; do not remove or
+  rewrite existing tests; do not install dependencies; do not modify unrelated
+  files.
+  Validation: run the complete suite (205 existing + new must pass); check for
+  circular imports; verify Manager, Planner and template selection still work.
+  Log: record as Task 004; preserve the latest Task 003 record and add the new
+  record; document implementation, files, exact test commands and results,
+  failures and fixes, decisions, remaining issues; update CURRENT STATUS and the
+  recommended next task; claim nothing unverified.
+  Final response: concise summary, files changed, test results, remaining issues.
+  Do not start Task 005; wait for owner review.
+
+INSPECTION (before changes; searched all *.py files)
+  - aether/manager.py: FEATURE_KEYWORDS (requirement words per feature) and
+    detect_features(text); used by ManagerAgent.understand().
+  - aether/ollama_planner.py: imported FEATURE_KEYWORDS from manager; defined
+    EXTRA_KEYWORDS (plan-step words) and mentions_feature(feature, step); used by
+    its own plan-quality checks (quality_problems, _builds_feature).
+  - aether/templates/__init__.py: imported mentions_feature from ollama_planner
+    (used by map_coverage); defined FEATURES = the same four names.
+  - aether/planner.py: a comment referenced manager.FEATURE_KEYWORDS.
+  - tests/test_planner.py imports detect_features from aether.manager (kept
+    working). No other code or test used these names. app.py was not involved.
+  - NOT detection and left where they are: FEATURE_HINTS and FEATURE_WEIGHTS
+    (OllamaPlanner prompt wording and project tiers), FEATURE_STEPS (rule-based
+    plan stepDECISIONS AND REASONS
+  1. One shared schema version for all kinds. Reason: simplest to reason about
+     and maps to a single schema_version column in SQLite later.
+  2. Migrations are pure functions in a (kind, version) registry, in
+     aether/schema.py with no file or UI dependencies. Reason: the SQLite
+     importer can call upgrade() on every legacy/JSON record unchanged.
+  3. Refuse newer versions instead of best-effort loading. Reason: re-saving a
+     partially understood record would silently destroy data.
+  4. The version is not a dataclass field. Reason: keeps == semantics (existing
+     tests), avoids making it agent-updatable, keeps in-memory objects clean.
+  5. Keep unknown top-level run fields and write them back; ignore (with warning)
+     unknown nested fields. Reason: top-level preservation protects against
+     round-trip loss cheaply; nested preservation would need extras on every
+     class (recorded as K17).
+  6. Wrong types are errors, never coerced. Reason: guessing could corrupt data.
+  7. history.json keeps unreadable entries on disk and copies damaged files
+     aside. Reason: requirement "do not silently discard important data".
+  8. events.jsonl not versioned per line. Reason: "preserve existing format";
+     it is derived from context.json. (K19)
+  9. Old entries are not rewritten on load. Reason: loading should not write.
+
+FILES CREATED
+  aether/schema.py
+  tests/test_schema.py   (50 test methods)
+FILES MODIFIED
+  aether/context.py
+  aether_ui/workflow.py
+  aether_ui/history.py
+  AETHER_DEVELOPMENT_LOG.txt   (this update)
+FILES DELETED
+  None.
+FILES DELIBERATELY UNTOUCHED
+  app.py, main.py, aether/manager.py, aether/developer.py, aether/agents.py and
+  every pre-existing test file (verified with git diff against HEAD).
+  Not committed (no commit was requested).
+
+TESTS AND VALIDATION (commands run from the project root, Python 3.11.9)
+  1. python -m unittest discover -s tests
+     First run after the code change: Ran 155 tests, FAILED (errors=8).
+       Cause: NameError: name 'fields' is not defined in aether/context.py (I
+       used dataclasses.fields in from_dict without importing it).
+       Fix: added "fields" to the dataclasses import. This was a bug in my change,
+       not an existing-test problem.
+     Re-run: Ran 155 tests in 6.997s - OK.
+  2. python -m unittest tests.test_schema
+     Ran 50 tests - OK (after writing the tests).
+  3. Review fix: one weak assertion in test_schema.py compared a loaded object to
+     itself; replaced with a to_dict() == original-dict comparison.
+  4. Mutation check: disabled the newer-version refusal in aether/schema.py
+     ("if version > SCHEMA_VERSION" -> "if False"): 5 tests failed as expected.
+     Restored the file; all 50 passed again.
+  5. Real-data check (read-only, no writes): history.json 14 entries loaded, 0
+     problems, all 14 opened via entry_to_result; ~/AETHER-projects run
+     9a69f9a89f98 loaded (status completed, 5 events, 0 warnings, 5 events read
+     by load_events).
+  6. FINAL: python -m unittest discover -s tests
+     Ran 205 tests in 17.081s - OK  (155 original + 50 new, 0 failures, 0 errors).
+  The streamlit "missing ScriptRunContext" lines in the output are the usual
+  harmless warnings from AppTest.
+  Git reported "LF will be replaced by CRLF" for aether/context.py: a line-ending
+  notice only.
+  Tooling note: my first attempt to write this log entry failed on shell quoting
+  before changing anything; it was redone through a script file.
+
+NEW TEST COVERAGE (tests/test_schema.py)
+  Unversioned records; current-version records; missing optional fields (top-level
+  and nested); unknown schema versions (newer, invalid types); invalid and missing
+  essential fields; malformed nested parts with location; unknown top-level and
+  nested fields; unrecognised status; save/load round trips for context, store,
+  result and history; preservation of legacy data when re-saved; legacy history
+  entries kept exactly when new runs are saved; unreadable history entries
+  skipped but kept; damaged history copied aside; events.jsonl reader with line
+  numbers; migration-registry completeness guard for future version bumps.
+
+IMPLEMENTED vs PLANNED (this task)
+  Implemented: everything listed under IMPLEMENTATION.
+  Planned only (NOT done): SQLite store and importer (D4); first real schema
+  migration; surfacing load warnings or skipped history entries in the UI;
+  provider abstraction (D1); Docker sandbox (D2); React/FastAPI (D3 transition).
+
+OUTCOME
+  Task 003 complete and verified: 205/205 tests pass. Awaiting owner review.
+  Task 004 not started.
+  Log format change (owner instruction, 2026-11-20): this file now contains the
+  latest content only; earlier task entries were removed.
+
+
+================================================================================
+TASK 004 - 2026-11-20 - PHASE 0: Decouple feature detection from the Manager
+================================================================================
+
+s), FEATURE_LABELS (UI labels), template `supports` sets.
+
+IMPLEMENTATION
+  aether/feature_detection.py (new)
+    - FEATURE_KEYWORDS and EXTRA_KEYWORDS moved verbatim; FEATURES =
+      tuple(FEATURE_KEYWORDS) (same four names, same order as the old
+      templates.FEATURES).
+    - detect_features(text) and mentions_feature(feature, step): same logic (whole-
+      word, case-insensitive regex); a small private helper _contains_word shares
+      the regex.
+    - Imports only `re` and aether.models. The docstring explains the two
+      vocabularies and that only the four SE features are detected.
+  aether/manager.py: the keyword table, detect_features and the `re` import were
+    removed; it now imports FEATURE_KEYWORDS and detect_features from the new
+    module (re-exported, so `from aether.manager import detect_features` still
+    works). ManagerAgent is otherwise unchanged; the execution flow was not touched.
+  aether/ollama_planner.py: no longer imports aether.manager. It imports
+    EXTRA_KEYWORDS, FEATURE_KEYWORDS and mentions_feature from the new module
+    (re-exported); its own copies were removed.
+  aether/templates/__init__.py: imports FEATURES and mentions_feature from the new
+    module instead of ollama_planner; its own FEATURES tuple was removed.
+  aether/planner.py: one comment updated to point to feature_detection.
+  tests/test_feature_detection.py (new, 24 tests)
+    - Pins both keyword tables and the feature order exactly.
+    - Every requirement keyword detects its feature; fixed output order; no
+      features; case-insensitivity; whole-word edge cases (webinar, capital,
+      therapist, dbms, recorded, accountant, web-based, DB, API/endpoint);
+      multi-word keywords; duplicates; punctuation and non-ASCII text; the three
+      workspace example requirements; plan-step words do not trigger detection.
+    - mentions_feature: requirement and plan-step words, whole words, case,
+      description-only, unknown feature, no cross-feature confusion.
+    - Compatibility: old import locations return the same objects; the Manager's
+      TaskBrief still gets the detected features.
+    - Coupling: AST check that the module imports only `re` and aether.models;
+      AST check that ollama_planner no longer imports the Manager and templates no
+      longer import ollama_planner; each of 9 modules imports cleanly in a FRESH
+      interpreter (cycle check); importing the new module loads none of manager,
+      ollama_planner, templates, planner, agents, developer.
+
+DECISIONS AND REASONS
+  1. The module holds both vocabularies (requirement words and plan-step words)
+     and both functions. Reason: they are one concern (feature vocabulary) and
+     both callers (Manager, OllamaPlanner/templates) needed it; splitting would
+     recreate coupling.
+  2. Code was moved verbatim, not redesigned. Reason: the task demands exact
+     behaviour preservation; a redesign would risk changed template choices.
+  3. Compatibility re-exports kept in manager.py and ollama_planner.py, and
+     templates.FEATURES. Reason: "keep public interfaces compatible wherever
+     practical" and the existing test imports from aether.manager. Recorded as
+     K21 so they can be removed later.
+  4. FEATURE_HINTS, FEATURE_WEIGHTS, FEATURE_STEPS, FEATURE_LABELS were NOT moved.
+     Reason: they are prompt wording, project tiers, plan content and UI labels,
+     not detection; moving them was not requested and would widen the change (K22).
+  5. The behaviour pin tests assert the keyword tables literally. Reason: a future
+     change to them silently alters plans and template choices, so it must be a
+     deliberate edit of a test.
+  6. No ML or domain detection added (explicitly out of scope).
+
+FILES CREATED
+  aether/feature_detection.py
+  tests/test_feature_detection.py   (24 test methods)
+FILES MODIFIED
+  aether/manager.py
+  aether/ollama_planner.py
+  aether/templates/__init__.py
+  aether/planner.py                 (one comment)
+  AETHER_DEVELOPMENT_LOG.txt        (this update)
+FILES DELETED
+  None.
+UNTOUCHED (git shows no changes): app.py, main.py, aether/developer.py,
+  aether/agents.py, aether/context.py logic for this task, every pre-existing test
+  file. Note: aether/context.py, aether_ui/history.py, aether_ui/workflow.py and
+  aether/schema.py, tests/test_schema.py still show as changed/new in git because
+  of Task 003; nothing is committed.
+
+TESTS AND VALIDATION (from the project root, Python 3.11.9)
+  1. python -m unittest tests.test_feature_detection
+     Ran 24 tests - OK.
+  2. Equivalence check against the ORIGINAL code: I loaded the pre-change
+     manager.py and ollama_planner.py from git HEAD into a scratch folder outside
+     the project (not committed, not part of the project) and compared them with the
+     new module on 35,000 generated texts (30,000 random word mixes built from every
+     keyword plus tricky words, 5,000 random character strings): detect_features
+     and mentions_feature for all four features plus an unknown one.
+     Result: "differences: 0"; both keyword tables identical to HEAD.
+     This is a sampled comparison, not a proof for every possible input.
+  3. python -m unittest discover -s tests
+     Ran 229 tests in 18.558s - OK  (205 existing + 24 new; 0 failures, 0 errors).
+     This includes the template-selection, planner, pipeline and Streamlit AppTest
+     suites, which exercise Manager, planners and template selection end to end.
+  4. Circular imports: no cycle found; the fresh-interpreter import test in
+     tests/test_feature_detection.py passes for feature_detection, manager,
+     ollama_planner, templates, planner, agents, developer, config and
+     aether_ui.workflow.
+  No failures or fixes were needed in this task.
+  Not verified: the Streamlit app was not launched in a browser (it was covered
+  only by the existing AppTest tests); coverage was not measured (no tool).
+
+IMPLEMENTED vs PLANNED (this task)
+  Implemented: the feature_detection module, rewiring, tests.
+  Planned only (NOT done): ML feature detection and domain classification (later
+  phase); removal of compatibility re-exports; consolidating the per-feature
+  tables (K22).
+
+REMAINING ISSUES
+  K3 (Manager.run() duplication), K15 (coverage tooling and template smoke test),
+  K21, K22, K23, plus the Task 003 items K16-K20.
+
+OUTCOME
+  Task 004 complete and verified: 229/229 tests pass; behaviour matches the
+  original on the sampled corpus. Awaiting owner review. Task 005 not started.
+
+
+================================================================================
+TASK 005 - 2026-11-20 - PHASE 0: Unify the Manager execution path
+================================================================================
+
+PROMPT (faithful record)
+  "PROJECT: AETHER. TASK 005: UNIFY THE MANAGER EXECUTION PATH. PHASE: 0 -
+  FOUNDATIONS." Stated status: Task 003 (schema versioning) and Task 004 (feature
+  detection) complete; 229 tests passing; Python 3.11; Streamlit the active UI;
+  Ollama the default local AI provider. Owner-approved decisions restated:
+  (1) Ollama default, cloud later; (2) Docker preferred sandbox; (3) keep
+  Streamlit until React reaches parity; (4) SQLite as the central run/history
+  store.
+  Objective: remove the duplicate execution logic between Manager.run() and
+  ManagerAgent.run_pipeline(), establishing ONE canonical execution path.
+  Step 1 inspection (before any change): inspect both methods; trace every caller
+  (main.py, app.py, tests); identify differences in requirement processing, agent
+  execution, checkpoint handling, approval/rejection, resume, failure handling,
+  event recording and persistence; identify the tests that depend on either path.
+  Step 2: use run_pipeline() as the canonical path; adapt the CLI path in main.py
+  to it; remove duplicated orchestration from Manager.run() only when callers are
+  safely migrated; keep any compatibility wrappers thin and delegating.
+  Step 3: preserve requirement processing, feature detection, planner and
+  developer execution, agent ordering, human approval checkpoints,
+  approval/rejection, pause/resume, failure handling and skipping, event
+  recording, persistence, existing CLI behaviour and the Streamlit workflow;
+  resume must not re-run completed agents.
+  Step 4: add regression tests for CLI execution through the pipeline,
+  sequential execution, approval and resume, rejection, failure and skipping,
+  event persistence, no duplicate execution on resume, compatibility with
+  existing callers; run the whole suite (229 + new must pass).
+  Step 5 validation: only one orchestration implementation; main.py no longer
+  uses a separate one; app.py still works; no circular imports; nothing silently
+  removed.
+  Step 6: update this log as TASK 005. LOGGING RULE: preserve the append-only
+  history; do not delete or overwrite previous task records; update CURRENT
+  STATUS and append the new entry; record prompt, inspection findings,
+  implementation, architectural changes, files, exact test commands and results,
+  errors and fixes, regression validation, remaining debt, completed/pending
+  features, recommended next task; no secrets.
+  Restrictions: no SQLite; do not modify the Streamlit UI; no React/FastAPI; no
+  new agents; no parallel/hierarchical/conditional orchestration; no Docker
+  execution; no new dependencies; do not modify unrelated functionality; do not
+  remove existing tests.
+  Final response: what changed, how the paths were unified, files, exact test
+  results, remaining issues, confirmation of the log update. Do not start Task
+  006; stop and wait for owner review.
+
+INSPECTION FINDINGS (done before any change)
+  Callers (searched all *.py):
+    Manager.run(): main.py (CLI) and tests: tests/test_planner.py (2 tests),
+      tests/test_pipeline.py (compares run() with the pipeline plan; asserts the
+      "[Manager] Handing off to RuleBasedPlanner..." log message and 18 steps),
+      tests/test_templates.py (2 uses, to get a plan).
+    run_pipeline()/resume()/approve(): aether_ui/workflow.py (start_project,
+      decide_plan; used by app.py), tests/test_pipeline.py, test_developer.py,
+      test_template_fit.py. app.py never calls Manager.run().
+  Differences between the two paths (before):
+    - Requirement processing: both used understand() (same cleaning and feature
+      detection). run() raised ValueError for an empty requirement; the pipeline
+      records a FAILED "Manager" event and a FAILED run.
+    - Agent execution: run() called planner.create_plan() DIRECTLY (no Agent, no
+      timing, no event); the pipeline runs agents from a list through PlannerAgent.
+    - Checkpoints / approve / reject / resume: pipeline only; run() has none.
+    - Failure handling: run() let planner exceptions propagate; the pipeline turns
+      them into FAILED events, a FAILED run and SKIPPED later agents.
+    - Events: run() recorded none; the pipeline records an AgentEvent per step.
+    - Persistence: run() saved nothing; the pipeline saves after each step when
+      given a store.
+    - Log lines: run() logged four messages ("Requirement received", "Detected
+      features", "Handing off to <planner>...", "Received a plan with N steps from
+      X."); the pipeline logs the first three the same way, then
+      "[Manager] Planner: done (N steps from X)." instead of the fourth.
+    - run_pipeline() already ignored self.planner (only run() used it).
+  Existing resume safety: resume() skips agents whose (name, action) already has a
+    DONE event, so finished agents are not re-run. Confirmed by new tests.
+  Real CLI output was captured BEFORE the change (see validation) to compare after.
+
+IMPLEMENTATION
+  aether/manager.py (only application file changed)
+    - ManagerAgent.run(requirement) is now a thin wrapper (about 20 lines): it
+      builds a private _PlanOnlyAgent (a PlannerAgent subclass wrapping
+      self.planner), calls self.run_pipeline(requirement, [agent]) with no store,
+      and returns context.plan. The planner is called once, through the pipeline.
+    - Behaviour kept: an unusable requirement raises ValueError with the same
+      message and logs nothing; an exception raised by the planner is re-raised
+      unchanged (the agent remembers it; the original exception object, not a
+      generic error); the log shows the same four messages in the same order. To
+      achieve that, run() temporarily wraps self.log so the pipeline's
+      "[Manager] Planner: done (...)" line is dropped and the original "[Manager]
+      Received a plan with N steps from X." line is printed after the pipeline
+      finishes; the original log function is restored in a finally block.
+    - _PlanOnlyAgent(PlannerAgent) added (private); the module now imports Agent,
+      AgentResult and PlannerAgent from aether.agents at top level (the old
+      TYPE_CHECKING-only import was replaced). aether.agents does not import the
+      Manager, so no cycle.
+    - The duplicated orchestration (direct planner call, hand-off logging, result
+      logging) was removed from run(); the pipeline code itself (run_pipeline,
+      approve, resume, _run_agents, _finish) is UNCHANGED.
+  main.py: NOT modified. It already called manager.run(), which now goes through
+    run_pipeline(); a test proves this (a spy on run_pipeline sees exactly one
+    call with exactly one PlannerAgent). I deliberately kept main.py's call so the
+    CLI output stays byte-identical (see decision 2).
+  tests/test_execution_path.py (new, 36 tests)
+    - CLI through the pipeline: spy shows one run_pipeline call with one
+      PlannerAgent; exact CLI output (4 log lines, plan header, no extra "Planner:
+      done" line); no-features wording; typed requirement (input()); empty
+      requirement (exit 1, exact message, planner never called); AI-planner
+      fallback messages; planner asked exactly once.
+    - run() compatibility: same plan as the pipeline; same four log messages;
+      planner receives the cleaned TaskBrief once; ValueError for empty input with
+      nothing logged; planner exception raised unchanged; log function restored
+      after a failure; nothing written to disk.
+    - Sequential execution: each agent once, in list order, events in order; the
+      planner runs once and later agents see its plan.
+    - Approval and resume: pause before the checkpoint agent (WAITING event with
+      preview); approve+resume runs only the remaining agents and does not re-run
+      the planner; resume refused when not waiting; approve refused when not
+      waiting; a completed run cannot be resumed again; resume after a restart
+      (context reloaded from disk, brand-new agent objects) re-runs nothing that
+      was DONE.
+    - Rejection: run CANCELLED, later agents SKIPPED and never run, the "choice"
+      is dropped on rejection, plan kept; resuming a cancelled run again adds no
+      duplicate events.
+    - Failure: crashing agent and agent-reported failure each stop the run and
+      skip later agents (which never run); failure after a checkpoint resume;
+      empty requirement fails before any agent.
+    - Event persistence: context.json and events.jsonl (via load_events) match the
+      in-memory events at the pause and after completion; saved when a run fails;
+      nothing written without a store.
+    - Structure (AST): agents are run in exactly one place in manager.py; the
+      Manager never calls create_plan; main.py never calls create_plan or an agent;
+      run() is short (<= 25 lines) and calls run_pipeline; the web workflow still
+      uses run_pipeline and resume.
+
+ARCHITECTURAL CHANGE
+  Before: two orchestration paths. After: one (run_pipeline). Callers:
+    CLI -> ManagerAgent.run() -> run_pipeline([_PlanOnlyAgent])
+    Web  -> start_project()/decide_plan() -> run_pipeline() / approve() / resume()
+  Nothing in the pipeline's flow, ordering, checkpoint, approval, skipping, event
+  or persistence logic was changed.
+
+DECISIONS AND REASONS
+  1. Keep ManagerAgent.run() as a thin wrapper instead of deleting it. Reason: the
+     task says not to remove public interfaces blindly; 6 existing tests across 3
+     files (which must not be rewritten) call it; it keeps the old ValueError and
+     log behaviour for any caller.
+  2. main.py keeps calling run() rather than calling run_pipeline() itself. Reason:
+     "existing CLI behaviour" must be preserved, and the CLI prints the Manager's
+     log. Calling run_pipeline() directly would change the CLI's progress line
+     ("Planner: done (...)" instead of "Received a plan with N steps..."). Through
+     the wrapper the output is byte-identical and the code still runs on the one
+     canonical path. The trade-off is K24 (the log-line swap).
+  3. Re-raise the planner's original exception from run(). Reason: the pipeline
+     turns exceptions into text events; run() callers previously got the real
+     exception, so the wrapper keeps that (private _PlanOnlyAgent remembers it).
+  4. No change to the pipeline, resume or persistence code. Reason: it is the
+     canonical, already-tested path; changing it would risk the web app.
+  5. Resume protection was already correct, so it is pinned with tests rather than
+     modified.
+  6. No new dependency, no UI change, no new agent.
+
+FILES CREATED
+  tests/test_execution_path.py   (36 test methods)
+FILES MODIFIED
+  aether/manager.py
+  AETHER_DEVELOPMENT_LOG.txt     (this update)
+FILES DELETED
+  None.
+UNTOUCHED THIS TASK (git shows no change): main.py, app.py, aether/developer.py,
+  aether/agents.py, aether_ui/*, every pre-existing test file. (Files shown as
+  modified or new in git from Tasks 003-004 are unchanged by this task; nothing is
+  committed.)
+
+TESTS AND VALIDATION (project root, Python 3.11.9)
+  1. Baseline captured BEFORE any change: ran main.py for 7 scenarios and saved
+     stdout + exit code in the scratch folder (outside the project): a to-do
+     requirement, a calculator, a requirement with extra spaces, an empty
+     requirement from stdin, a requirement typed at the prompt, an invalid
+     AETHER_PLANNER value, and AETHER_PLANNER=ollama. Ollama was actually running
+     with llama3.2:1b on this machine, so the Ollama scenario produced a real model
+     plan (not compared afterwards because model output can vary).
+  2. After the change: python -m unittest discover -s tests -> 229 tests OK, before
+     adding new tests.
+  3. CLI comparison: the same 6 deterministic scenarios re-run and compared with
+     cmp: all 6 byte-identical (stdout and exit codes), also after the final test
+     run.
+  4. python -m unittest tests.test_execution_path -> Ran 36 tests - OK.
+  5. Mutation checks (temporarily edit aether/manager.py, run the new tests,
+     restore; the file was restored and confirmed identical with cmp):
+       - resume re-runs finished agents: FAILED (3 failures)
+       - run() never restores the log: FAILED (1 failure)
+       - pipeline line not filtered: FAILED (2 failures)
+       - failure no longer skips later agents: FAILED (2 failures)
+       - run() bypasses the pipeline (calls the planner directly): FAILED
+         (5 failures, 7 errors)
+     Error found in my method: my first attempt at two of these mutations did not
+     apply because manager.py has Windows line endings, so those two "OK" results
+     were meaningless; I redid them with line-ending handling and they failed as
+     expected. No application code was affected.
+  6. FINAL: python -m unittest discover -s tests
+     Ran 265 tests in 10.185s - OK (229 previous + 36 new; 0 failures, 0 errors).
+  7. Circular imports: each of aether.manager, aether.agents, aether.context,
+     aether.developer, aether.config, aether.fallback, aether.ollama_planner,
+     aether.templates, aether_ui.workflow, aether_ui.history and main imported
+     successfully in a fresh interpreter (python -B -c "import <module>"). The
+     fresh-interpreter test in tests/test_feature_detection.py also still passes.
+  8. app.py: covered by the existing Streamlit AppTest tests (test_app.py,
+     test_checkpoint_ui.py), which passed. The app was NOT opened in a browser.
+  Failures in application behaviour during this task: none.
+
+REGRESSION VALIDATION SUMMARY
+  Verified: single agent-running site; CLI output identical; run() contract kept;
+  pipeline/approval/rejection/resume/failure/persistence behaviour covered and
+  unchanged; all 229 earlier tests pass unmodified.
+  Not verified: browser use of the Streamlit app; the Ollama CLI scenario against
+  the baseline; behaviour under concurrent use (K24).
+
+IMPLEMENTED vs PLANNED (this task)
+  Implemented: unified execution path, thin run() wrapper, 36 regression tests.
+  Planned only (NOT done): removing the run() wrapper and its log-line swap (K24);
+  an agent registry replacing (name, action) resume keys and the hard-coded agent
+  list on resume (K2/K26); coverage tooling and the template smoke test (K15);
+  event/message core (Phase 1); SQLite (D4); Docker sandbox (D2); React (D3).
+
+REMAINING TECHNICAL DEBT
+  K2/K26 (resume keys, hard-coded resume agent list), K24, K25, K27, K15, K21-K23,
+  K16-K20, plus the earlier open items (K1, K5-K12, K14).
+
+OUTCOME
+  Task 005 complete and verified: 265/265 tests pass; one orchestration
+  implementation; CLI output unchanged. Awaiting owner review. Task 006 not
+  started.
+
+
+================================================================================
+TASK 006 - 2026-11-20 - PHASE 0: Generated-template smoke tests (K15)
+================================================================================
+
+PROMPT (faithful record)
+  "PROJECT: AETHER. TASK 006: GENERATED-TEMPLATE SMOKE TESTS. PHASE: 0 -
+  FOUNDATIONS." Stated status: Tasks 003, 004, 005 complete; 265 tests passing;
+  Python 3.11; Streamlit the active UI; Ollama the default local AI provider;
+  SQLite, React, FastAPI, Docker and additional agents not implemented. "Read
+  AETHER_DEVELOPMENT_LOG.txt completely before making any changes. Treat the
+  current codebase and log as the source of truth. Do not assume anything that has
+  not been verified."
+  Objective: address K15 by adding smoke tests that verify generated project
+  templates are structurally valid and that the generated applications can be
+  tested independently in a subprocess; catch problems ordinary AETHER unit tests
+  may miss (files generated successfully but containing errors or failing their
+  own tests).
+  Step 1 (inspect before changing; modify nothing): aether/templates/,
+  aether/developer.py, aether/workspace.py, tests/test_templates.py,
+  tests/test_developer.py, tests/test_template_fit.py and the existing
+  generation/workspace tests. For each of the three templates (CLI calculator,
+  to-do web app, library REST API): files generated, dependencies, existing
+  tests/validation, how it can be tested independently, whether it can be tested
+  offline.
+  Step 2: create tests/test_template_smoke.py that: (1) generates each template
+  into a temporary directory; (2) verifies all expected files; (3) verifies paths
+  stay inside the temporary workspace; (4) checks essential project files;
+  (5) runs Python syntax validation; (6) runs the generated templates' own tests
+  in a subprocess; (7) captures stdout, stderr and exit codes; (8) applies
+  reasonable timeouts; (9) uses the current Python interpreter; (10) cleans up
+  temporary files; (11) does not modify the real AETHER project or the user's
+  existing generated projects. IMPORTANT: do not execute arbitrary generated
+  applications without inspecting their contents and understanding their
+  behaviour; no network access; do not install dependencies automatically; do not
+  execute commands outside the isolated temporary workspace; if a template needs
+  an unavailable dependency, report it clearly and skip or validate safely without
+  falsely claiming it ran; do not weaken existing tests.
+  Step 3: focused tests for calculator, to-do and library generation; expected
+  files and structure; syntax validation; generated test execution; subprocess
+  failure handling; subprocess timeout handling; temporary workspace cleanup; no
+  modification of the original AETHER project; no network access or dependency
+  installation; deterministic and offline.
+  Step 4: run `python -m unittest tests.test_template_smoke`, then the complete
+  suite `python -m unittest discover -s tests`; all 265 existing tests plus the new
+  ones must pass; report exact counts and results; investigate failures, fix
+  genuine regressions, do not hide failures or change existing tests
+  unnecessarily; do not claim a template passed unless the validation actually
+  executed successfully.
+  Step 5: do not install coverage.py or any dependency; inspect whether coverage
+  tooling is available; if not, report whether coverage.py is installed, the
+  proposed installation command, why coverage would be useful, and wait for
+  explicit approval; do not start coverage integration.
+  Step 6: update this log. The log is APPEND-ONLY: preserve Tasks 003, 004 and 005
+  completely; do not delete, rewrite or overwrite previous task records; update
+  CURRENT STATUS; append a new TASK 006 record; preserve existing architecture,
+  decisions and technical debt; record the exact prompt, inspection findings,
+  implementation details, decisions, files, exact test commands, actual results,
+  errors and fixes; keep implemented and planned separate; update the recommended
+  next task; never include secrets. "Correct the conflicting logging instructions
+  in the document only if necessary to ensure that the append-only rule is
+  unambiguous. Do not remove historical records."
+  Strict restrictions: no SQLite; no React or FastAPI; no new agents; no new
+  orchestration strategies; no Docker execution; do not modify the agent
+  execution flow; do not modify the Streamlit UI; do not change template-selection
+  behaviour; no new dependencies without approval; do not modify unrelated files;
+  do not remove or rewrite existing tests; do not commit or push.
+  Final response: what was inspected; what was implemented; how each template was
+  smoke-tested; files created/modified/deleted; exact test commands and results;
+  errors and fixes; remaining K15 work including coverage tooling; confirmation
+  that Tasks 003-005 remain preserved; confirmation that the log was updated. Do
+  not begin Task 007; stop and wait for review.
+
+INSPECTION FINDINGS (before any change; nothing was modified during inspection)
+  Read: this log in full, aether/templates/__init__.py, tests/test_templates.py,
+  the server, db and calculator template sources, the setUp methods and imports of
+  every generated test file, and the template file listing.
+  Files each template generates (as written by the Developer through Workspace):
+    calculator (4):  README.md, calculator.py, tests/__init__.py,
+                     tests/test_calculator.py
+    todo_web (13):   README.md, server.py, todo_app/{__init__,auth,db,tasks,web}.py,
+                     todo_app/schema.sql, todo_app/static/style.css,
+                     tests/{__init__,test_auth,test_tasks,test_web}.py
+    library_api (10): README.md, server.py, library_api/{__init__,api,db,store}.py,
+                     library_api/schema.sql, tests/{__init__,test_api,test_store}.py
+  Dependencies: none for all three. Every import in the template sources is the
+    Python standard library or a module of the project itself (sqlite3, http.server,
+    hashlib, hmac, secrets, json, re, math, unittest, ...). No requirements file.
+  Existing validation (before this task): tests/test_templates.py only READS and
+    compiles the template text, checks imports of names, scans for dangerous
+    calls/modules, SQL string-formatting, localhost binding, password hashing and
+    schema tables. test_developer.py / test_template_fit.py test generation and
+    template choice. Nothing ever EXECUTED generated code (that is K15).
+  How each can be tested independently: each project ships its own unittest suite
+    (README: `python -m unittest discover -v`). Counts by static scan of `def
+    test_`: calculator 14, todo_web 25 (auth 7, tasks 7, web 11), library_api 24
+    (api 8, store 16).
+  Offline? Yes. All generated tests use in-memory SQLite (`connect(":memory:")`),
+    call the application objects directly (TodoApp.handle, LibraryAPI.handle, store
+    functions) and open no sockets, files outside the project, or servers.
+  Execution safety review (why running them is acceptable): server.py (both) starts
+    a server only inside `if __name__ == "__main__"` (main() creates HTTPServer and
+    serve_forever); the generated tests do not import server.py. So the smoke tests
+    NEVER run server.py; they only import it (no side effects at import time; the
+    database file is only opened inside main()). calculator.py is a pure function
+    module with a CLI main(); interactive mode reads stdin, which the smoke tests do
+    not use (stdin is closed).
+  Environment: Python 3.11.9; sqlite3 available; coverage.py NOT installed
+    (`python -m coverage` -> "No module named coverage"); pytest 9.0.2 is installed
+    but unused (the project uses unittest).
+  Real runs folder (~/AETHER-projects) holds 1 existing run, which the tests must
+    leave untouched.
+
+IMPLEMENTATION
+  tests/test_template_smoke.py (new, 38 test methods). No application file was
+  changed. Structure:
+    Helper `run_python(folder, args, timeout)` runs the CURRENT interpreter
+      (sys.executable) as: -I (isolated: ignores PYTHON* variables, the working
+      folder and user site-packages), -B (no .pyc files), -X utf8, with the
+      temporary project as working folder, a stripped environment (only PATH,
+      SYSTEMROOT, TEMP-type variables, NO_PROXY), stdin closed, captured
+      stdout/stderr (UTF-8), and a timeout. It never raises for failure or timeout;
+      it returns an Outcome(command, returncode, stdout, stderr, timed_out).
+      A GUARD script runs inside the child before the project code: socket
+      connect/connect_ex/bind/listen/sendto, create_connection and the name lookups
+      raise OSError, so generated code cannot reach the network even by accident.
+    Outcome.tests_passed is True only if the process exited 0 AND was not timed out
+      AND unittest printed OK AND at least one test ran ("Ran 0 tests" is not a
+      pass; OK printed with a non-zero exit is not a pass).
+    generate(key, runs_dir) generates a template exactly as the web app does:
+      ManagerAgent.run_pipeline([PlannerAgent, DeveloperAgent(store)]) -> approve
+      Checkpoint A -> resume, with a RunStore in a temporary folder.
+    missing_dependencies(workspace) lists imports that are neither standard library
+      nor part of the project; the suite tests skip (skipTest with a clear message,
+      "it was NOT run") if a template needs an unavailable module or sqlite3.
+    count_test_methods, snapshot (path -> size, mtime) and default_runs_listing
+      support the isolation checks.
+  Test classes:
+    GenerationTests (11): all three templates covered; each run COMPLETED with the
+      right project_type; exactly the hand-written expected file set is generated
+      (and recorded in context.files); the template definitions agree with it; every
+      file stays inside the temporary workspace (resolved paths, no symlinks); each
+      run folder holds only context.json, events.jsonl, workspace; on-disk files
+      match the recorded SHA-256 and size; essential files present and non-empty
+      (entry point, README containing the requirement and the test command,
+      tests/__init__.py, test files, schema.sql with CREATE TABLE); no `{{`
+      placeholders left; no dependency files and no non-stdlib imports; no
+      network/process modules (socket, urllib.request, http.client, requests,
+      ftplib, smtplib, telnetlib, subprocess, ctypes) imported by any generated file.
+    SyntaxTests (2): every generated .py compiles via compile() (no .pyc written);
+      a deliberate syntax error is caught.
+    GeneratedTestSuiteTests (6): each project's own suite run with
+      `python -m unittest discover -v` in a child process; a template counts only if
+      exit code 0, unittest OK, tests run >= the statically counted test methods and
+      every generated test file's module name appears in the verbose output; also
+      checks the child uses the current interpreter in isolated mode with byte-code
+      off, runs inside the project with no PYTHONPATH/AETHER_* variables, and that
+      running the suite leaves no files behind (no .db, no __pycache__).
+    GeneratedCommandLineTests (4): the calculator is run for real (12 + 30 = 42,
+      7 / 2 = 3.5, 6 x 7 = 42, 0.1 + 0.2 = 0.3; 1 / 0 exits 1 with "Cannot divide by
+      zero"; --help works); both server.py files are only IMPORTED (never started):
+      main and make_handler exist, HOST/PORT are 127.0.0.1:8000, and no .db file is
+      created by importing.
+    FailureDetectionTests (6): the smoke test can fail. Damaged COPIES (never the
+      original): a wrong calculation (+ made -) makes the generated tests fail
+      ("FAILED (failures=...", "FAIL:"); a syntax error in generated code is a
+      failure; renaming a table in the library schema is noticed; the original is
+      unchanged; a project with no tests is NOT reported as passing; a missing
+      third-party import is detected (the basis for skipping instead of claiming).
+    SubprocessHandlingTests (6): a failing process is captured (exit code, stdout,
+      stderr) not raised; an uncaught exception is captured with its traceback; a
+      process that sleeps too long is stopped after the timeout (2 s) and reported
+      as timed out with no return code; network operations are blocked in the child
+      (connect, bind, name lookup all raise); unittest output is trusted only with a
+      clean exit; the child environment contains no PYTHON*/AETHER* variables.
+    IsolationAndCleanupTests (3): a full generate-and-test cycle removes its
+      temporary folder, and afterwards a snapshot of the whole AETHER project and of
+      ~/AETHER-projects are identical to the snapshots taken before; generation uses
+      only the temporary store; the base class cleanup removes its temporary folder
+      and leaves the AETHER project unchanged.
+
+DECISIONS AND REASONS
+  1. Generate through the real pipeline (plan -> approve -> Developer) rather than
+     calling template.render directly. Reason: the point of K15 is that files AETHER
+     wrote may fail; this also re-verifies Workspace paths, checksums and recording.
+  2. The expected file lists are written out by hand, not read from the template
+     definitions (and a test checks they agree). Reason: a template silently losing
+     a file must be noticed.
+  3. Subprocess isolation uses command-line flags (-I -B -X utf8), not environment
+     variables. Reason: -I ignores PYTHON* variables, so PYTHONDONTWRITEBYTECODE had
+     no effect (see errors below).
+  4. A guard inside the child blocks sockets, in addition to the static check that
+     generated code imports no network modules. Reason: "no network access" is
+     enforced, not just assumed. It is a safety net for these known templates, NOT a
+     security sandbox (see K28).
+  5. The server programs are imported but never started. Reason: starting them would
+     open a network port; their request handling is exercised by the templates' own
+     tests (which call TodoApp.handle / LibraryAPI.handle directly).
+  6. Pass criteria require exit code 0, unittest "OK", at least one test, expected
+     test files all visible in the output. Reason: avoid false passes (no tests
+     discovered, a crash after printing OK, a timeout).
+  7. Missing dependencies cause a skip with an explicit "NOT run" message, never a
+     pass. Reason: the prompt forbids claiming a run that did not happen.
+  8. Existing tests and application code were not changed. The existing static
+     tests in tests/test_templates.py are kept; the new tests add execution.
+  9. Coverage tooling was only inspected, not installed (see below).
+  10. Log header corrected (owner's allowance): the PURPOSE/RULES text still said the
+     file is "rewritten" and "replace this file's content", which contradicted the
+     append-only rule. The header now states APPEND-ONLY unambiguously and keeps the
+     earlier format changes as a dated, superseded history. No task record was
+     removed or edited.
+
+FILES CREATED
+  tests/test_template_smoke.py   (38 test methods)
+FILES MODIFIED
+  AETHER_DEVELOPMENT_LOG.txt     (header rules clarified; CURRENT STATUS updated;
+                                  this entry appended)
+FILES DELETED
+  None.
+APPLICATION CODE: no change. git status shows the same 7 modified application files
+  as after Task 005 (all from Tasks 003-005) plus this one new test file; nothing is
+  committed or pushed.
+
+TESTS AND VALIDATION (project root; Python 3.11.9)
+  1. python -m unittest tests.test_template_smoke
+     First run: Ran 38 tests in 17.854s - FAILED (failures=1).
+       Failure: test_the_subprocess_uses_the_current_interpreter_in_isolated_mode:
+       expected flags "1 1" (isolated, byte-code off) but got "1 0".
+       Cause: a real problem in MY harness. Python's -I (isolated) option ignores
+       PYTHON* environment variables, so PYTHONDONTWRITEBYTECODE=1 had no effect and
+       the child WROTE .pyc files into the temporary project. The test "leaves no
+       files behind" had not noticed because its snapshot skipped __pycache__.
+       Fix: pass -B and -X utf8 as command-line flags (removed the ineffective
+       PYTHON* variables from the child environment); the "no files left behind"
+       check now snapshots with nothing skipped and asserts no __pycache__/.pyc/.db.
+     After the fix: Ran 38 tests in 16.979s - OK.
+  2. Real per-template results (run once more, directly, to read the numbers; the
+     child process output was read, not assumed):
+       calculator   4 files   14 of 14 tests ran, exit 0, unittest OK  (0.2 s)
+       todo_web    13 files   25 of 25 tests ran, exit 0, unittest OK  (4.0 s; slow
+                              because the generated auth tests hash passwords with
+                              PBKDF2)
+       library_api 10 files   24 of 24 tests ran, exit 0, unittest OK  (0.2 s)
+     No timeouts, no missing dependencies; sqlite3 present; 0 tests skipped (a
+     verbose run contains no "skipped").
+  3. Mutation checks on the harness (edit the new test file, run it, restore; the
+     file was restored and confirmed identical with cmp):
+       - network guard disabled:                 FAILED (1 failure)
+       - -B flag removed:                        FAILED (2 failures)
+       - tests_passed ignores the exit code:     FAILED (1 failure)
+     (Not mutation-tested: the timeout test; the missing-dependency skip path.)
+  4. FINAL: python -m unittest discover -s tests
+     Ran 303 tests in 27.947s - OK  (265 previous + 38 new; 0 failures, 0 errors,
+     0 skipped).
+  5. Isolation evidence: IsolationAndCleanupTests compares snapshots of the whole
+     AETHER project folder and of ~/AETHER-projects before/after a full
+     generate-and-test cycle: identical. The temporary folder no longer exists
+     afterwards.
+  What is NOT verified: the skip path for an unavailable dependency or sqlite3 was
+  not exercised end to end here (both are present); only the detection helper is
+  tested. The generated servers were never started, so no HTTP request through a real
+  socket was tested. The calculator's interactive mode was not run. Generated
+  projects were run on Python 3.11.9 only. The calculator/to-do/library READMEs'
+  other commands (python server.py, python calculator.py) beyond those listed above
+  were not run.
+
+COVERAGE TOOLING (Step 5: inspected only; NOTHING installed)
+  - coverage.py installed? NO. `python -m coverage --version` -> "No module named
+    coverage". (pytest 9.0.2 is present but is not coverage tooling.)
+  - Proposed installation (needs the owner's explicit approval first):
+        python -m pip install coverage
+    (into the current Python 3.11.9 environment; an exact pinned version can be
+    chosen at approval time; it would be a development-only tool, and could be
+    listed in a separate requirements-dev file rather than requirements.txt).
+  - Proposed use afterwards: `python -m coverage run -m unittest discover -s tests`
+    then `python -m coverage report`. No integration was started.
+  - Why it is useful: 303 tests pass but nothing measures which code they run. It
+    would show untested parts of aether/ (e.g. main.py, which has no direct tests of
+    its own beyond the Task 005 CLI tests, error branches in the Ollama planner,
+    schema migration paths) and give a baseline to guard against regressions before
+    Phase 1 changes the core. Caveat: the generated templates run in child processes,
+    so their coverage is not measured by default (not needed: they are not part of
+    AETHER's own code).
+
+IMPLEMENTED vs PLANNED (this task)
+  Implemented: execution-level smoke tests for all three templates (generation,
+  structure, syntax, the generated projects' own suites in isolated subprocesses,
+  calculator CLI, server import safety, failure/timeout/cleanup/no-network checks).
+  Planned only (NOT done): coverage tooling (awaiting approval); real sandboxed
+  execution of generated code in Docker (D2, Phase 3); starting the generated
+  servers and testing real HTTP (needs a sandbox); a Tester agent that runs
+  generated tests inside AETHER (Phase 3); SQLite (D4); React (D3).
+
+REMAINING K15 WORK
+  1. Coverage tooling: not installed; awaiting the owner's approval (above).
+  2. main.py (CLI) is covered only by the Task 005 tests, not by any end-to-end
+     process test; coverage numbers would confirm this.
+  3. No concurrency or streaming tests (Phase 1/2 concerns).
+
+NEW KNOWN ISSUES (also recorded in CURRENT STATUS)
+  K28 The smoke-test isolation (isolated mode, stripped environment, socket guard,
+      timeout, temporary folder) is best effort for these three known templates. It
+      is not a security boundary: a generated program could still read files the
+      user can read or use libraries that bypass the guard (the static checks forbid
+      the obvious ones). Running arbitrary or AI-written code needs the Docker
+      sandbox (D2, Phase 3).
+  K29 On timeout only the child process is killed, not any grandchildren; the three
+      templates start none.
+  K30 The full suite is slower (about 28 s, was about 10 s): the smoke module takes
+      about 17 s (the to-do template's password hashing alone is about 4 s per run,
+      and it is run twice by the tests).
+  K31 The templates are fixed content: the smoke tests check one generated project
+      per template; the README is the only part personalised by the requirement.
+
+OUTCOME
+  Task 006 complete and verified: 303/303 tests pass (265 + 38). Each template's own
+  test suite was executed in an isolated subprocess and passed (calculator 14/14,
+  to-do 25/25, library 24/24). Coverage tooling was not installed and awaits approval.
+  Tasks 003, 004 and 005 are preserved unchanged. Awaiting owner review. Task 007
+  not started.
+
+
+TASK 007 - 2026-11-21 - PHASE 0: Coverage gap analysis (inspection only)
+================================================================================
+
+PROMPT (summary)
+  Coverage.py was installed by the owner and measured 303 tests passing, 4,130
+  statements, 130 missed, 97% overall. Inspect uncovered statements (app.py, main.py,
+  aether_ui/theme.py first, then the rest), categorise them (meaningful untested
+  logic / UI-framework paths / defensive error handling / not worth testing),
+  recommend tests, give file+line, behaviour, why uncovered, worth testing,
+  recommended cases and priority. STRICT: analysis only; do not modify application
+  code or existing tests; do not add tests; no refactor; no new dependencies.
+  Wait for owner approval before implementing.
+
+WHAT WAS DONE
+  - Re-ran `python -m coverage run -m unittest discover -s tests` and
+    `python -m coverage report -m` with COVERAGE_FILE pointed at the session scratch
+    folder (so no data file was written in the project). 303 tests OK; the numbers
+    matched the owner's: 4,130 statements, 130 missed, 97%.
+  - Also ran once with --branch: application code 1,640 statements, 436 branches,
+    93% (branch partials: app.py 14, main.py 2, others 1-3 each).
+  - Read every uncovered statement in its context. No file in the project was
+    changed by this task; no test was added.
+
+KEY FINDINGS
+  - Of the 130 missed statements, 31 are in tests/ files (skip branches, import
+    fallbacks, `if __name__ == "__main__"`). Measured on application code only:
+    1,640 statements, 99 missed, 94% (not 97%). The 97% figure is flattered by the
+    tests measuring themselves; use --omit="tests/*" for the real baseline.
+  - app.py holds 68 of the 99 application misses. They fall in three clusters:
+      * the whole History page (history_page, load_context) and About page (440-485);
+        the existing AppTest tests only exercise the Workspace page;
+      * Workspace warnings and error paths: unsupported-feature and uncovered-step
+        warnings (348-353), Developer-failure message (261-264), "ambiguous" fit
+        badge (321), file-changed warning and file-missing error (408-415), saved-run
+        banner (192), technical-details expander (188-189), legacy-stages renderer (238);
+      * helpers: home-relative path display (56-58), format_time (63), example
+        button callback (67-70), invalid planner setting fallback (76-77),
+        run_store ValueError (111-113), history save OSError toast (133-134).
+  - theme.py misses mostly mirror app.py (page_title, history_row, stages, the
+    "Changed on disk" tag, the "Local AI" step chip) plus the theme-detection
+    fallback.
+  - main.py: EOF on input, config-error return code, the small-local-model note,
+    and the __main__ guard.
+  - Core packages are nearly complete: agents.py 2, config.py 1, developer.py 3,
+    ollama_planner.py 3, schema.py 1, history.py 2, workflow.py 1 missed.
+  - Most valuable single gap: aether/developer.py 84-85 (a disk-write failure
+    during generation returns a FAILED result carrying the partial file records)
+    and the History page "Open" path (app.py 460-468 plus load_context), which is
+    the only way a saved run is reopened.
+
+CATEGORISATION AND PRIORITY
+  Delivered to the owner in the Task 007 final report (file, lines, behaviour, why
+  uncovered, worth testing, recommended tests, priority). Categories: meaningful
+  untested logic, UI/framework-specific paths, defensive/error handling, and code
+  that does not reasonably need a test (the __main__ guards, the base-class default
+  preview(), test-file skip branches).
+
+FILES
+  Created: none. Modified: AETHER_DEVELOPMENT_LOG.txt (this entry and CURRENT STATUS).
+  Deleted: none. Application code, tests and git state untouched; nothing committed.
+
+TEST RESULTS
+  python -m coverage run -m unittest discover -s tests   -> Ran 303 tests, OK
+  python -m coverage run --branch -m unittest discover -s tests -> Ran 303 tests, OK
+  (38.7 s and 59.5 s on a busy machine.)
+
+KNOWN ISSUES ADDED
+  K32 (Task 007) Coverage is measured with tests included, which overstates the
+      figure (97% vs 94% for application code). A .coveragerc that omits tests/ and
+      enables branch coverage is recommended (needs owner approval to add).
+  K33 (Task 007) A .coverage data file exists in the project root (the owner's run);
+      it is gitignored. Statement coverage only; the owner's run had no branch data.
+  K34 (Task 007) It is not yet verified that Streamlit AppTest can open the
+      History and About pages declared with st.navigation (AppTest has switch_page,
+      which was not tried); the History page tests may need the page function
+      called through a small harness script. To be checked when tests are approved.
+
+OUTCOME
+  Analysis delivered; nothing implemented. Awaiting the owner's approval of which
+  recommended tests to add. Tasks 003-006 preserved unchanged. Task 008 not started.
