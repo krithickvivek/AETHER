@@ -16,7 +16,7 @@ from difflib import SequenceMatcher
 from typing import Callable
 from urllib.parse import urlparse
 
-from aether.manager import FEATURE_KEYWORDS
+from aether.feature_detection import EXTRA_KEYWORDS, FEATURE_KEYWORDS, mentions_feature  # noqa: F401 (re-exported)
 from aether.models import Plan, PlanStep, TaskBrief
 from aether.planner import PHASES, Planner
 
@@ -63,14 +63,6 @@ FEATURE_HINTS = {
     "web_ui": "the web pages and user interface",
     "api": "the API endpoints",
 }
-EXTRA_KEYWORDS = {
-    "authentication": ["auth", "authenticate", "authentication", "sign-in", "signin", "credentials",
-                       "logout", "registration", "session", "sessions"],
-    "database": ["data model", "schema", "crud", "storage", "persistence", "saving", "storing", "loading"],
-    "web_ui": ["ui", "user interface", "interface", "page", "pages", "form", "forms", "front-end", "frontend"],
-    "api": ["rest", "http", "request", "requests", "response", "responses"],
-}
-
 # Verbs that mean "build it". A feature only counts as implemented when an Implementation
 # step performs one of these actions on it; mentioning it in a design step is not enough.
 BUILD_VERBS = {
@@ -346,12 +338,6 @@ def _duplicate(a: PlanStep, b: PlanStep) -> bool:
     if a.phase != b.phase or not words_a or not words_b:
         return False
     return len(words_a & words_b) / len(words_a | words_b) >= WORD_OVERLAP
-
-
-def mentions_feature(feature: str, step: PlanStep) -> bool:
-    keywords = FEATURE_KEYWORDS.get(feature, []) + EXTRA_KEYWORDS.get(feature, [])
-    text = step.description.lower()
-    return any(re.search(rf"\b{re.escape(kw)}\b", text) for kw in keywords)
 
 
 def _builds_feature(feature: str, step: PlanStep) -> bool:

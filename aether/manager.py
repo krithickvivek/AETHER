@@ -1,50 +1,21 @@
 """Manager agent: understands a requirement and coordinates the workflow."""
 
-import re
 import time
 from dataclasses import fields
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
+from aether.agents import Agent, AgentResult, PlannerAgent
 from aether.context import (
     APPROVED, AWAITING_APPROVAL, CANCELLED, COMPLETED, DONE, FAILED, REJECTED, RUNNING, SKIPPED, WAITING,
     Approval, ProjectContext, RunStore, now,
 )
+from aether.feature_detection import FEATURE_KEYWORDS, detect_features  # noqa: F401 (re-exported)
 from aether.models import Plan, TaskBrief
 from aether.planner import Planner
-
-if TYPE_CHECKING:
-    from aether.agents import Agent
 
 # ProjectContext fields an agent may set through AgentResult.updates.
 _UPDATABLE = {f.name for f in fields(ProjectContext)} - {
     "run_id", "requirement", "created_at", "status", "events", "approvals"}
-
-# Keywords that tell the Manager a requirement needs a particular feature.
-FEATURE_KEYWORDS = {
-    "authentication": [
-        "login", "log in", "logs in", "sign in", "sign up", "signup",
-        "register", "password", "account", "accounts", "authentication",
-    ],
-    "database": [
-        "database", "db", "save", "saves", "saved", "store", "stores", "stored",
-        "persist", "record", "records",
-    ],
-    "web_ui": [
-        "website", "web", "webpage", "web page", "frontend", "browser", "dashboard",
-    ],
-    "api": ["api", "apis", "endpoint", "endpoints"],
-}
-
-
-def detect_features(text: str) -> list[str]:
-    """Return the features whose keywords appear in the text (as whole words)."""
-    lowered = text.lower()
-    found = []
-    for feature, keywords in FEATURE_KEYWORDS.items():
-        if any(re.search(rf"\b{re.escape(kw)}\b", lowered) for kw in keywords):
-            found.append(feature)
-    return found
-
 
 class ManagerAgent:
     """Receives a requirement, builds a brief, and hands planning off to a Planner."""
@@ -61,17 +32,28 @@ class ManagerAgent:
         return TaskBrief(requirement=cleaned, features=detect_features(cleaned))
 
     def run(self, requirement: str) -> Plan:
-        """Full workflow: understand -> hand off to the Planner -> return the plan."""
-        brief = self.understand(requirement)
-        self.log(f"[Manager] Requirement received: {brief.requirement}")
-        self.log(f"[Manager] Detected features: {', '.join(brief.features) or 'none (core steps only)'}")
+        """Plan only: a thin compatibility wrapper over run_pipeline() (the one execution path).
 
-        self.log(f"[Manager] Handing off to {self.planner.name}...")
-        plan = self.planner.create_plan(brief)
-        self.log(f"[Manager] Received a plan with {len(plan.steps)} steps from {plan.planner_name}.")
-        return plan
+        Runs the pipeline with just this Manager's planner and returns the plan. It behaves as it always
+        did: an unusable requirement raises ValueError, an exception from the planner is raised unchanged,
+        and the log shows the same four messages."""
+        agent = _PlanOnlyAgent(self.planner)
+        # The pipeline's own "[Manager] Planner: done (...)" line is replaced by the plan-only summary below.
+        pipeline_log, self.log = self.log, lambda message: (
+            None if message.startswith(f"[Manager] {agent.name}: ") else pipeline_log(message))
+        try:
+            context = self.run_pipeline(requirement, [agent])
+        finally:
+            self.log = pipeline_log
+        if context.plan is None:
+            if agent.error is not None:
+                raise agent.error
+            failure = next((e for e in context.events if e.status == FAILED), None)
+            raise ValueError(failure.detail if failure else "The Manager could not produce a plan.")
+        self.log(f"[Manager] Received a plan with {len(context.plan.steps)} steps from {context.plan.planner_name}.")
+        return context.plan
 
-    def run_pipeline(self, requirement: str, agents: list["Agent"], store: RunStore | None = None) -> ProjectContext:
+    def run_pipeline(self, requirement: str, agents: list[Agent], store: RunStore | None = None) -> ProjectContext:
         """Run a requirement through a sequence of agents, sharing one ProjectContext.
 
         Each agent's result is recorded as it really happened. If an agent fails or crashes,
@@ -116,7 +98,7 @@ class ManagerAgent:
         self._save(context, store)
         return context
 
-    def resume(self, context: ProjectContext, agents: list["Agent"], store: RunStore | None = None) -> ProjectContext:
+    def resume(self, context: ProjectContext, agents: list[Agent], store: RunStore | None = None) -> ProjectContext:
         """Continue a paused run with the same agent list. Agents that already finished are not re-run."""
         if context.status == CANCELLED:
             done = self._done_agents(context)
@@ -130,7 +112,7 @@ class ManagerAgent:
         context.status = RUNNING
         return self._run_agents(context, agents, store)
 
-    def _run_agents(self, context: ProjectContext, agents: list["Agent"], store: RunStore | None) -> ProjectContext:
+    def _run_agents(self, context: ProjectContext, agents: list[Agent], store: RunStore | None) -> ProjectContext:
         done = self._done_agents(context)
         for index, agent in enumerate(agents):
             if (agent.name, agent.action) in done:
@@ -171,7 +153,7 @@ class ManagerAgent:
 
         return self._finish(context, [], store, failed=False)
 
-    def _finish(self, context: ProjectContext, remaining: list["Agent"], store: RunStore | None,
+    def _finish(self, context: ProjectContext, remaining: list[Agent], store: RunStore | None,
                 failed: bool) -> ProjectContext:
         for agent in remaining:
             context.record(agent.name, agent.action, SKIPPED, "Not reached: an earlier step failed")
@@ -184,7 +166,7 @@ class ManagerAgent:
         return {(e.agent, e.action) for e in context.events if e.status == DONE}
 
     @staticmethod
-    def _skipped(context: ProjectContext, agent: "Agent") -> bool:
+    def _skipped(context: ProjectContext, agent: Agent) -> bool:
         return any(e.agent == agent.name and e.action == agent.action and e.status == SKIPPED for e in context.events)
 
     @staticmethod
@@ -195,6 +177,21 @@ class ManagerAgent:
     def _save(context: ProjectContext, store: RunStore | None) -> None:
         if store is not None:
             store.save(context)
+
+
+class _PlanOnlyAgent(PlannerAgent):
+    """The planner step used by ManagerAgent.run(): remembers an exception so run() can raise it unchanged."""
+
+    def __init__(self, planner: Planner):
+        super().__init__(planner)
+        self.error: Exception | None = None
+
+    def run(self, context: ProjectContext) -> AgentResult:
+        try:
+            return super().run(context)
+        except Exception as exc:
+            self.error = exc
+            raise
 
 
 def _elapsed(start: float) -> float:

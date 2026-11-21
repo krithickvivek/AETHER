@@ -19,7 +19,7 @@ BASE_STEPS = [
     ("Documentation", "Write a README with setup and usage instructions"),
 ]
 
-# Extra steps added when the Manager detects a feature (see manager.FEATURE_KEYWORDS).
+# Extra steps added when the Manager detects a feature (see feature_detection.FEATURE_KEYWORDS).
 FEATURE_STEPS = {
     "authentication": [
         ("Design", "Design user accounts and roles"),

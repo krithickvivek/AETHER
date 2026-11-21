@@ -11,10 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aether.models import Plan, TaskBrief
-from aether.ollama_planner import mentions_feature
+from aether.feature_detection import FEATURES, mentions_feature
 
 TEMPLATE_ROOT = Path(__file__).resolve().parent
-FEATURES = ("authentication", "database", "web_ui", "api")
 REQ, DES, SET, IMP, TST, DOC = "Requirements", "Design", "Setup", "Implementation", "Testing", "Documentation"
 CORE = "core"
 
