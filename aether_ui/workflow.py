@@ -5,7 +5,7 @@ so the page never shows progress that did not really occur.
 """
 
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 
 from aether.agents import PlannerAgent
@@ -15,6 +15,10 @@ from aether.context import ProjectContext, RunStore
 from aether.developer import DeveloperAgent
 from aether.manager import ManagerAgent
 from aether.models import Plan, PlanStep, TaskBrief
+from aether.schema import (
+    KIND_RUN_RESULT, SCHEMA_VERSION, VERSION_KEY, SchemaError, brief_from_dict, build, check_items, check_type,
+    plan_from_dict, upgrade,
+)
 from aether.planner import BASE_STEPS, FEATURE_STEPS, Planner, RuleBasedPlanner
 
 DONE, FAILED, SKIPPED = "done", "failed", "skipped"
@@ -258,27 +262,44 @@ def plan_to_markdown(plan: Plan) -> str:
 
 
 def result_to_dict(result: RunResult) -> dict:
-    return asdict(result)
+    """The saved form of a RunResult: the current schema version, then every field."""
+    return {VERSION_KEY: SCHEMA_VERSION, **asdict(result)}
 
 
-def result_from_dict(data: dict) -> RunResult:
-    brief = TaskBrief(**data["brief"]) if data.get("brief") else None
-    plan = None
-    if data.get("plan"):
-        plan_data = data["plan"]
-        plan = Plan(
-            requirement=plan_data["requirement"],
-            planner_name=plan_data["planner_name"],
-            steps=[PlanStep(**step) for step in plan_data["steps"]],
-        )
+STAGE_TYPES = {"agent": (str,), "title": (str,), "status": (str,), "detail": (str,)}
+RESULT_TYPES = {"requirement": (str,), "started_at": (str,), "duration_ms": (int, float), "stages": (list,),
+                "log": (list,), "error": (str, type(None)), "error_details": (str, type(None)),
+                "fallback_reason": (str, type(None)), "run_id": (str, type(None))}
+
+
+def result_from_dict(data: dict, warnings: list[str] | None = None) -> RunResult:
+    """Load a saved RunResult, whatever schema version it was saved with (see aether/schema.py).
+
+    Fields added after the first release (fallback_reason, run_id) are optional. Raises SchemaError when an
+    essential field is missing or malformed, or the version is newer than this AETHER understands. Unknown
+    fields are ignored and, if a list is passed as `warnings`, reported there."""
+    warnings = [] if warnings is None else warnings
+    where = "Saved run"
+    data = upgrade(data, KIND_RUN_RESULT, where)
+    missing = [name for name in ("requirement", "started_at", "duration_ms", "stages", "log") if name not in data]
+    if missing:
+        raise SchemaError(f"{where} is missing required field(s): {', '.join(missing)}.")
+    for name, expected in RESULT_TYPES.items():
+        if name in data:
+            check_type(data[name], expected, where, name)
+    check_items(data["log"], (str,), where, "log")
+    known = {f.name for f in fields(RunResult)}
+    for name in sorted(set(data) - known - {VERSION_KEY}):
+        warnings.append(f"{where}: ignored unknown field {name!r}.")
     return RunResult(
         requirement=data["requirement"],
         started_at=data["started_at"],
         duration_ms=data["duration_ms"],
-        stages=[Stage(**stage) for stage in data["stages"]],
+        stages=[build(Stage, stage, f"{where}.stages[{index}]", STAGE_TYPES, warnings)
+                for index, stage in enumerate(data["stages"])],
         log=list(data["log"]),
-        brief=brief,
-        plan=plan,
+        brief=None if data.get("brief") is None else brief_from_dict(data["brief"], f"{where}.brief", warnings),
+        plan=None if data.get("plan") is None else plan_from_dict(data["plan"], f"{where}.plan", warnings),
         error=data.get("error"),
         error_details=data.get("error_details"),
         fallback_reason=data.get("fallback_reason"),  # absent in older history entries
