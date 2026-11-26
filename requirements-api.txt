@@ -1,0 +1,9 @@
+# Only needed for the web API (aether_api) and its tests. The command-line app and the Streamlit app
+# do not need these. Install with:  python -m pip install -r requirements-api.txt
+#
+# Ranges allow patch releases only, so the API contract (and its OpenAPI output) stays reproducible.
+# Pydantic and Starlette are installed as dependencies of FastAPI.
+fastapi>=0.135.3,<0.136
+uvicorn>=0.44.0,<0.45
+# Needed by FastAPI's TestClient (the API tests).
+httpx>=0.28.1,<0.29

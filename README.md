@@ -80,6 +80,23 @@ python main.py "Build a to-do website where users can log in and save tasks"
 
 Or run `python main.py` and type the requirement when asked. The command line prints the plan only; generating files needs the web app's approval checkpoint.
 
+## Web API (read-only preview for the planned React interface)
+
+AETHER also has a small web API (FastAPI) that shows saved runs, history and generated files to the planned React interface. It is **read-only**: it cannot create, approve, reject or change anything yet. The Streamlit app does not depend on it.
+
+```bash
+python -m pip install -r requirements-api.txt    # FastAPI, Uvicorn and httpx (httpx is used by the tests)
+python -m aether_api                              # then open http://127.0.0.1:8765/api/v1/health
+```
+
+- It listens only on `127.0.0.1`, port 8765 (`--port` changes the port; there is no option to change the address). Requests whose `Host` or `Origin` is not localhost are refused, and there is no CORS.
+- `python -m aether_api --dev` also accepts the Vite development server (`localhost:5173`), for the React interface.
+- `python -m aether_api --dump-openapi` prints the OpenAPI document (used later to generate TypeScript types).
+- It reads the same data as the Streamlit app (`AETHER_RUNS_DIR`, `AETHER_HISTORY_FILE`) and writes nothing.
+- Endpoints, all `GET` under `/api/v1`: `health`, `config`, `planners/ollama/status`, `history`, `history/{entry_id}`, `runs/{run_id}`, `runs/{run_id}/checkpoint`, `runs/{run_id}/files`, `runs/{run_id}/files/content?path=...` and `runs/{run_id}/plan.md`.
+- Errors always look like `{"error": {"code": "...", "message": "...", "details": ...}}`. Paths in responses are short `~/...` forms, never absolute.
+- Tests: `python -m unittest discover -s tests -p "test_api_*.py" -v`. They need the packages above and **fail (they never skip)** if those are missing.
+
 ## Where data is stored
 
 | What | Where | Notes |
@@ -127,7 +144,7 @@ ollama pull llama3.2:1b
 python -m unittest discover -s tests -v
 ```
 
-The suite has 155 tests and takes about 10 seconds.
+The suite has 494 tests (144 of them test the web API, which needs `requirements-api.txt`) and takes about one minute.
 
 - The web interface is tested without a browser using Streamlit's `AppTest`. Those tests are skipped if Streamlit is not installed.
 - Tests use temporary folders for history, runs and generated files, so they never touch your real data.
@@ -140,6 +157,7 @@ The suite has 155 tests and takes about 10 seconds.
 app.py                      Web interface (Streamlit): pages, layout and navigation
 main.py                     Command-line entry point (planning only)
 requirements.txt            Dependency for the web interface (streamlit)
+requirements-api.txt        Dependencies for the read-only web API and its tests (fastapi, uvicorn, httpx)
 .streamlit/config.toml      Local-only server, no usage statistics, dark and light themes
 
 aether/                     Core library (no UI)
@@ -160,7 +178,15 @@ aether_ui/                  Web interface helpers
   history.py                Run history in .aether/history.json
   theme.py                  Styling and small HTML components
 
-tests/                      Unit and interface tests (built-in unittest)
+aether_api/                 Read-only web API (FastAPI) over the same core: no agent logic, no writes
+  app.py                    create_app(): routers, security middleware, error handlers
+  security.py               Host allow-list and Origin checks (localhost only, no CORS)
+  repository.py             Reads runs, history and files through RunStore / history / Workspace
+  presenters.py, schemas.py Response models (the API contract) and the mapping from core objects
+  routers/                  health, config, history, runs, files
+docs/                       Planning documents (react-frontend-plan.md)
+
+tests/                      Unit and interface tests (built-in unittest); test_api_*.py cover the web API
 ```
 
 ## Limitations
