@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 
+from aether.fileio import write_text_atomic
 from aether.models import Plan, TaskBrief
 from aether.schema import (
     KIND_CONTEXT, SCHEMA_VERSION, VERSION_KEY, SchemaError, brief_from_dict, build, check_items, check_type,
@@ -245,6 +246,4 @@ class RunStore:
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(text, encoding="utf-8")
-    temp.replace(path)  # replace in one step so a crash can't leave half a file
+    write_text_atomic(path, text)  # a unique temp file, then one replace: a crash can't leave half a file

@@ -101,7 +101,7 @@ python -m aether_api                              # then open http://127.0.0.1:8
 
 | What | Where | Notes |
 |---|---|---|
-| Run history | `.aether/history.json` in the project folder | Ignored by git. Clear it on the History page, or delete the file |
+| Run history | `.aether/history.json` in the project folder | Ignored by git. Clear it on the History page, or delete the file. Saving is atomic and locked, so several programs can use it at once; the empty `history.json.lock` beside it is only a lock file and is safe to delete when AETHER is not running |
 | Runs and generated projects | `~/AETHER-projects/<run id>/` (`context.json`, `events.jsonl`, `workspace/`) | Always outside AETHER's own folder; AETHER refuses to store runs inside it |
 
 To run a generated project, open its `workspace` folder and follow its README, for example `python calculator.py 12 + 30` or `python server.py`, and `python -m unittest discover -v` for its tests.
@@ -144,7 +144,7 @@ ollama pull llama3.2:1b
 python -m unittest discover -s tests -v
 ```
 
-The suite has 494 tests (144 of them test the web API, which needs `requirements-api.txt`) and takes about one minute.
+The suite has 560 tests (154 of them test the web API, which needs `requirements-api.txt`) and takes about one minute.
 
 - The web interface is tested without a browser using Streamlit's `AppTest`. Those tests are skipped if Streamlit is not installed.
 - Tests use temporary folders for history, runs and generated files, so they never touch your real data.
@@ -171,6 +171,7 @@ aether/                     Core library (no UI)
   context.py                ProjectContext, activity log (AgentEvent), approvals and RunStore
   developer.py              DeveloperAgent: Checkpoint A preview and template generation
   workspace.py              Workspace: the only safe way to write project files (path checks, size limits)
+  fileio.py                 Atomic file writes, retrying reads and a cross-process lock (used by history and RunStore)
   templates/                The three project templates (*.tmpl) and the template-fit rules
 
 aether_ui/                  Web interface helpers

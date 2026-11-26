@@ -360,7 +360,7 @@ Dependencies between phases: 2 before 3; 3 before 5; 4 can run in parallel with 
 
 ## 15. Next implementation task
 
-Phase 2 (Task 012) is done: see section 16. The next task is Phase 3, Task 013, described at the end of section 16.
+Phase 2 (Task 012) is done: see section 16. Task 013 (history persistence hardening) is done too (16.7). The next task is Phase 3, Task 014, described at the end of section 16.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -436,13 +436,22 @@ replaced between the check and the read yields a normal `missing` or error respo
 25 history entries and one run per entry for the list; Ollama status makes one local request (cached 15 s); a run left in status
 `running` is shown as it is saved.
 
-### 16.7 Phase 3 (next): Task 013, the write path
+### 16.7 Task 013 (done): history persistence hardening, the Phase 3 prerequisite
+R1 is resolved in the core. `aether/fileio.py` provides an atomic write (unique temp file, fsync, `os.replace` with retry), a
+retrying read and a cross-process, cross-thread lock; `aether_ui/history.py` now saves and clears under that lock
+(`history.json.lock`), reads strictly before changing anything (a read failure raises `HistoryReadError`, an OSError, and
+writes nothing; only a file that was read and is really corrupt is copied aside, then replaced), and raises typed
+`HistoryError`s (`HistoryReadError`, `HistoryLockError`, `HistoryWriteError`) that Phase 3 can map to 503. `RunStore` uses the
+same atomic write (no lock; Phase 3 adds per-run locks). Reads stay lock-free and the API is unchanged; Streamlit still shows a
+damaged or unreadable file as an empty history (K36, by decision). Details are in the development log.
+
+### 16.8 Phase 3 (next, now Task 014): the write path
 Scope: `POST /api/v1/runs` (202 + job), `GET /api/v1/jobs/{id}`, `POST /api/v1/runs/{id}/decision` (approve, reject, override with
 `acknowledged`), `DELETE /api/v1/history`; bounded in-memory job registry (TTL, size cap, one Ollama job at a time); per-run and
 history locks; `jobs.py` and `locks.py`; request schemas; 409 `not_waiting_for_approval`; the template guard (no template and
 no valid override is a 409, not a recorded Developer failure); history save after a plan exists (the `app.generate` rule); the
 Origin check already enforces same-origin writes (allow POST/DELETE for allowed origins and keep 405 for everything else);
 `stale` run reporting; parity tests against the Streamlit flows. Prerequisites needing owner decisions: (a) a defect task for
-history write hardening (PermissionError retry; never rewrite history after a non-parse read failure, R1), (b) whether to fix the
+history write hardening (DONE in Task 013, see 16.7), (b) whether to fix the
 TracingPlanner fallback note (finding 1) in the core, (c) whether `GET /jobs/{id}` should also expose live progress, which needs the
 optional core hook for an early `run_id` (R2).

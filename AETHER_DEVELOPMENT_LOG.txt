@@ -5,159 +5,184 @@ Project: AETHER (AI-Enabled Team for Hierarchical Engineering and Reasoning)
 Rule (owner): after every task this file is OVERWRITTEN with only the latest status
 and the latest task's results (owner decisions and known issues are carried over).
 Nothing is appended. Never include secrets. Planned features are kept separate from
-implemented ones. Earlier records are in git history.
+implemented ones. Earlier records are in git history (Task 012: commit c593998).
 
 Last updated: 2026-11-26
-Current task: TASK 012 - REACT FRONTEND PHASE 2: read-only FastAPI backend foundation
+Current task: TASK 013 - HISTORY PERSISTENCE HARDENING (prerequisite for Phase 3)
 Task state: IMPLEMENTED AND VERIFIED. Awaiting the owner's review. Not staged, not
-            committed, not pushed. Phase 3 not started.
+            committed, not pushed. Phase 3 and React not started.
+Base: branch main, commit c593998 (Phase 2 read-only FastAPI backend).
 
 --------------------------------------------------------------------------------
-1. TASK 012 PROMPT (summary)
+1. OBJECTIVE
 --------------------------------------------------------------------------------
-Architecture approved. Implement, test and document Phase 2 independently: a new
-aether_api/ package exposing existing AETHER data through READ-ONLY endpoints under
-/api/v1 (health, config, planners/ollama/status, history, history/{entry_id},
-runs/{run_id}, runs/{run_id}/checkpoint, runs/{run_id}/files, files/content?path=,
-plan.md); requirements-api.txt; tests/test_api_*.py. Mandatory corrections: C1 no
-Workspace creation by reads, C2 Host/Origin security, C3 no silent test skipping;
-plus C4-C12 (run models for failed/invalid-folder runs, schemas, history problems,
-naming, progress, errors, reliability, housekeeping, state decisions). No React, no
-write endpoints, no core or Streamlit changes, no SQLite/Docker, no commit or push.
+Make sure concurrent writers and persistence failures can never silently lose
+history entries (risk R1 from the architecture review), without changing the
+history format, the schema, Streamlit behaviour, the Phase 2 API or the overall
+architecture. No SQLite, no new dependencies, no commit or push.
 
 --------------------------------------------------------------------------------
-2. FILES (whole task)
+2. ROOT CAUSE AND RISKS FOUND (all verified in the code)
 --------------------------------------------------------------------------------
-  Created (all untracked):
-    aether_api/__init__.py __main__.py app.py security.py errors.py schemas.py
-      repository.py presenters.py deps.py routers/{__init__,health,config,history,
-      runs,files}.py
-    requirements-api.txt
-    tests/api_support.py and tests/test_api_{basic,contract,errors,files,history,
-      runs,security,side_effects}.py   (144 tests)
-    docs/react-frontend-plan.md  (from the planning task; now updated, see 6)
-  Modified (tracked): .gitignore (node_modules/, frontend/node_modules/,
-    frontend/dist/), README.md (API section, layout, test count), this log.
-  Modified (git-ignored, local only): .claude/launch.json (entry "aether-api").
-  Application code (app.py, main.py, aether/, aether_ui/) and all 350 existing tests:
-  UNCHANGED (git status shows no change to them). No folder was created inside
-  AETHER's own folder. Nothing staged, committed or pushed.
+  H1 No locking: save_run read the whole file, prepended an entry and rewrote it.
+     Two writers (two Streamlit sessions, or Streamlit plus the future write API)
+     could both start from the same old list; the later write silently dropped the
+     earlier entry (a lost update).
+  H2 DATA-LOSS PATH: _read_raw treated ANY OSError (for example a brief
+     PermissionError on Windows) as "damaged". save_run then copied the file aside
+     and wrote ONLY the new entry, so a valid history was silently replaced by one
+     entry. (Reproduced end to end by the new tests against the old behaviour.)
+  H3 Fixed temp name (history.tmp): concurrent writers shared one temp file; the
+     replace had no retry when another program held the file; a crash left a stale
+     temp file.
+  H4 Invalid UTF-8 in history.json raised UnicodeDecodeError (not caught).
+  H5 The damaged-copy name had one-second resolution, so a second damage within a
+     second could overwrite the first copy.
+  H6 RunStore._write_atomic used the fixed temp name context.json.tmp (two
+     simultaneous saves of one run shared it) and had no retry.
+  H7 Workspace.write_text also uses a fixed .tmp name (one writer per run; noted,
+     NOT changed: out of scope).
+  Constraints kept: history format and schema unchanged; legacy, newer and junk
+  entries preserved byte for byte; truly corrupt files still copied aside as
+  history.json.damaged-* then replaced; Streamlit still shows a damaged or
+  unreadable file as an empty history (K36, by decision); _write and
+  _write_atomic stay patchable by name; no *.tmp left behind; reading creates
+  nothing (the API's read path is unchanged).
 
 --------------------------------------------------------------------------------
-3. ARCHITECTURE (as built)
+3. IMPLEMENTATION DECISIONS
 --------------------------------------------------------------------------------
-React (later) -> aether_api (FastAPI, thin) -> RunRepository -> existing core
-(RunStore, aether_ui.workflow/history, Workspace, developer.preview, progress_steps).
-The API imports aether and aether_ui.workflow/history only (never app.py or
-aether_ui.theme; a test proves Streamlit is not imported). It never saves its own
-models: context.json and history.json are only written by the core, and the API
-writes nothing. Streamlit is untouched.
-Deviations from the plan: presenters.py and deps.py added; jobs.py and locks.py NOT
-created (no writes yet, C10 "only if necessary"); no /runs list (the list is
-/history, C7); one RunView model serves stored runs (source "run") and history
-snapshots (source "snapshot"); actions are eligibility only; no "stale" flag yet;
-/docs and /redoc disabled (they load scripts from a CDN).
-Endpoints (all GET): /api/v1/health, config, planners/ollama/status, history,
-history/{entry_id}, runs/{run_id}, runs/{run_id}/checkpoint[?override=],
-runs/{run_id}/files, runs/{run_id}/files/content?path=, runs/{run_id}/plan.md,
-openapi.json. Errors: {"error": {"code", "message", "details"}}; 404, 422, 503 (403
-and 405 from the guard); a failed or cancelled run and a Developer failure are 200
-run state; unexpected errors are a generic 500; saved text is scrubbed of the home
-folder and AETHER's folder.
-Corrections: C1 load and validate the run first, build a Workspace only for a run
-with recorded files whose folder already exists; C2 LocalhostGuard (Host allow-list
-localhost:8765 and 127.0.0.1:8765, plus :5173 only with --dev; Origin allow-list on
-every method; non-GET needs an allowed Origin even without a body and then gets 405;
-no CORS; websockets refused; bind 127.0.0.1 only, no --host option); C3 api_support
-raises ImportError naming requirements-api.txt (never a skip); C4 failed-planning,
-Developer-failure, invalid-runs-folder and fallback fields plus a persistent
-actions.disabled_reason; C5 Pydantic schemas and OpenAPI; C6 history file_state
-(ok/missing/damaged/unreadable), problems[] and per-entry context_state
-(ok/missing/unreadable); C7 naming; C8 progress_steps with a synthesised RunResult,
-run time and Manager log only from a history snapshot; C9 error model; C10 retry on
-PermissionError (3 tries, 50 ms), no history rewrite after a failed read; C11
-housekeeping; C12 recorded (React Context + localStorage, TanStack Query later, no
-Zustand).
+Chosen: a lock file plus atomic replace plus a strict read in the update path (the
+smallest reliable solution). Rejected: an in-process threading lock alone (does not
+stop a second program), optimistic "re-read and compare" (the final replace cannot
+be made conditional), stale-prone lock files with age-based cleanup, and SQLite
+(out of scope).
+  aether/fileio.py (NEW, standard library only):
+    write_text_atomic  unique temp file in the same folder, flush, fsync, os.replace
+                       retried on a brief PermissionError (20 tries x 50 ms); the
+                       temp file is removed on ANY failure (including
+                       KeyboardInterrupt) and the old file stays untouched.
+    read_text_retry    read with 3 tries on a brief PermissionError.
+    exclusive_lock     a thread lock plus an OS byte-range lock on a sidecar file
+                       (msvcrt on Windows, fcntl elsewhere). The OS releases it when
+                       the holder dies, so a crash cannot leave a stale lock.
+                       Default timeout 15 s, then LockTimeout (an OSError).
+  aether_ui/history.py:
+    save_run and clear_history run under the lock on history.json.lock.
+    _read_for_update (strict): a file that cannot be READ raises HistoryReadError
+      and nothing is written; only a file that was read and is really corrupt (not
+      JSON, not a list, empty, truncated, invalid UTF-8) is copied aside (a unique
+      name, never overwriting an earlier copy) and replaced. If the copy fails the
+      file is not replaced.
+    Typed errors, all subclasses of OSError so app.py's existing "except OSError"
+      toast keeps working: HistoryError > HistoryReadError, HistoryLockError,
+      HistoryWriteError. Messages contain no paths. Phase 3 can map them to 503.
+    Stale temp files (history.json.*.tmp) are swept under the lock (any temp file
+      present while the lock is held is from a crashed writer); other files are
+      never touched.
+    Reading (load_history, load_history_report) takes no lock, creates nothing, and
+      keeps its lenient display behaviour (K36), now with retry on a brief lock and
+      invalid UTF-8 treated as damaged instead of crashing.
+  aether/context.py: RunStore._write_atomic now calls write_text_atomic (same name,
+    same behaviour, safer). No lock for runs (Phase 3 adds per-run locks).
 
 --------------------------------------------------------------------------------
-4. TEST COMMANDS AND RESULTS (actual, no coverage)
+4. FILES (whole task)
 --------------------------------------------------------------------------------
-Install: python -m pip install -r requirements-api.txt   (all requirements were
-  already satisfied: fastapi 0.135.3, uvicorn 0.44.0, httpx 0.28.1, pydantic 2.12.5,
-  starlette 1.0.0)
-Launch:  python -m aether_api  ->  http://127.0.0.1:8765/api/v1/health
-         (options: --port N, --dev for Vite on 5173, --dump-openapi)
-API tests: python -m unittest discover -s tests -p "test_api_*.py"
-  Ran 144 tests in about 30 s ... OK
-  per module: basic 12, contract 8, errors 7, files 23, history 25, runs 37,
-  security 20, side_effects 12
-Full suite: python -B -m unittest discover -s tests
-  Ran 494 tests in 52.5 s ... OK (350 existing + 144 new). Plain "OK": ZERO skipped,
-  zero expected failures. (An earlier full run of the same code took 113 s, also OK;
-  the difference is machine load.)
-Streamlit compatibility: all 350 existing tests, including the AppTest page tests,
-  pass unchanged.
-Security tests: Host (allowed, 13 refused variants, every endpoint, unknown paths),
-  Origin (GET and every other method, bodyless, null, foreign, dev mode), 405 for all
-  writes, no CORS headers, dev port refused when not in dev, custom port.
-Filesystem side-effect tests: missing, unknown and odd run ids create no folder (not
-  even the runs folder); runs with no files, cancelled and failed runs get no
-  workspace folder; Workspace is constructed 0 times by every read except one file
-  read (1 time) and never when the folder is gone; whole-sweep directory snapshots
-  (sizes and mtimes) and file bytes are identical before and after; every core writer
-  (RunStore.save, _write_atomic, save_run, clear_history, write_text, approve, resume,
-  run_pipeline, DeveloperAgent.run, copy2, rmtree, remove, replace, Popen, system)
-  raises if called and no read endpoint calls them.
-Mutation checks (on a COPY in the scratchpad, never the real files): 20 mutations
-  (Workspace built early, Host check removed/loosened, Origin rules removed, non-GET
-  allowed, damaged history shown as empty, no scrubbing, preview that saves, no
-  retry, unsafe paths, unrecorded files readable, failures hidden, fallback ignored,
-  echoed input, damaged snapshot as 404, a registered DELETE, docs enabled): all 20
-  caught; the unmodified copy passed 143/143 (then 144 after one hardening test).
-Live check: the real server (uvicorn) started on a spare port with isolated data:
-  health 200, config 200, empty history, bad Host 403, foreign Origin 403, POST with
-  allowed Origin 405, DELETE without Origin 403, /docs 404, nothing created;
-  --dump-openapi prints valid OpenAPI 3.1 (10 paths, 33 schemas).
+  Created:  aether/fileio.py
+            tests/test_history_persistence.py        (49 tests)
+            tests/test_history_persistence_app.py    (7 tests, Streamlit AppTest)
+            tests/test_api_history_persistence.py    (10 tests, FastAPI)
+  Modified: aether_ui/history.py (rewritten internals, same public API),
+            aether/context.py (2 lines: import and _write_atomic body),
+            README.md (lock-file note, test count 560, layout line),
+            docs/react-frontend-plan.md (section 16.7 Task 013 done; Phase 3 is now
+            Task 014), AETHER_DEVELOPMENT_LOG.txt (this refresh).
+  Unchanged: app.py, main.py, aether_api/, every existing test file, the history
+  format and schema. The real .aether/history.json was not touched (last modified
+  2026-11-17; no lock file there). Nothing staged, committed or pushed.
 
 --------------------------------------------------------------------------------
-5. FINDINGS, RISKS AND KNOWN LIMITATIONS
+5. TESTS ADDED AND RESULTS (no coverage)
 --------------------------------------------------------------------------------
-  K41 (NEW, core, not changed) The planner fallback reason is not stored in a run:
-      start_project wraps the planner in a TracingPlanner that hides fallback_reason
-      from PlannerAgent, so runs from either UI have no notes["planner_fallback"]
-      and no failed "Build plan with local AI model" event; only the history
-      snapshot has it. The API reads the note, then the snapshot; a test pins this.
-  Open risk R1 (unchanged): history.json writes are read-modify-write and the core
-      treats any read OSError as "damaged" then rewrites; with two writers
-      (Streamlit plus a future write API) this could lose history. Reads are safe;
-      write hardening is a Phase 3 prerequisite (owner decision).
-  Limitations: read-only; eligibility flags without a decision endpoint; no jobs;
-      no "stale" run flag; symlink escape is covered by the existing Workspace tests,
-      not through the API (symlinks need privileges on Windows); the list loads one
-      run per history entry (25 max); Ollama status makes one cached local request;
-      tests use FastAPI's TestClient plus one live-server check, not a browser.
-  Unchanged elsewhere: K34 tests use Streamlit internals (Task 008 helpers); K35 a
-      saved run whose context cannot be loaded opens silently in Streamlit (the API
-      reports context_state); K36 a damaged history.json looks empty in Streamlit
-      (the API reports file_state); K37 real-data check is metadata only; K38 a
-      partial write failure shows files but no message in Streamlit (the API reports
-      developer_error); K39 the invalid-runs-folder error shows once in Streamlit
-      (the API keeps the reason); K40 flaky timing, see below; K28-K32 smoke-test
-      isolation is not a sandbox, only the child is killed on timeout, suite time,
-      fixed templates, coverage should omit tests/.
-  K40 (Task 011): the second failure was a machine suspension (about 95% confident:
-      9,323 s log gap, child tests all ok, subprocess timeout counts suspended time);
-      the first (150.9 s) fits a wall-clock jump in AppTest (about 60%), traceback
-      not kept. No code change needed. Do not leave full runs unattended on a
-      machine that sleeps.
+New tests: 66 = 49 core + 7 Streamlit + 10 API.
+  Core (test_history_persistence): atomic write (replace, own temp name per write,
+  failed replace keeps the old file, brief PermissionError retried, disk full,
+  KeyboardInterrupt cleanup, fsync before replace); the lock (threads, a second
+  taker times out and succeeds after, release on failure, another PROCESS kept out,
+  a process that dies holding it leaves no lock, lock file that cannot be created);
+  concurrent history writers (12 threads; 6 real child processes x 3 saves; 25-entry
+  limit under 30 concurrent saves; clear racing with save; a reader never sees a
+  half-written file); failures (unreadable history is NOT replaced, retried brief
+  lock, lenient display unchanged, failed write, full disk, failed clear, busy
+  history raises HistoryLockError, folder that cannot be prepared, no paths in
+  messages); corrupt files (not JSON, not a list, empty, truncated, invalid UTF-8,
+  two damages in one second, failed copy-aside, good history never copied aside,
+  stale temp sweep); compatibility (legacy, newer and junk entries preserved exactly
+  through concurrent saves, file format byte-identical to the old writer's shape,
+  previous-version files extend correctly, reading creates no lock file or folder,
+  environment variable and default location unchanged); RunStore (atomic save, retry,
+  failed save keeps the previous run, simultaneous saves never corrupt a run).
+  Streamlit: both plans kept and listed; Delete all still works; damaged history is
+  copied aside and the new plan saved; a BUSY history shows the existing warning
+  toast and loses nothing, then works again; an UNREADABLE history is not
+  overwritten; a failed write keeps the history; the run stays usable.
+  FastAPI: every entry from concurrent writers is listed; reads during a writer
+  storm never see damaged or unreadable; reads work while the lock is held and
+  create no lock file; a failed save leaves the API's view unchanged; unreadable is
+  reported by the API AND refused by the save; damaged then replaced with a copy
+  kept; legacy entries preserved and openable; unreadable entries kept and reported.
+Runs (actual):
+  New persistence tests:        Ran 66 tests in about 15 s ... OK
+  Core file alone, 3 repeats:   49 tests OK each time (also with ResourceWarning as
+                                an error), 10-12 s each
+  All API tests:                Ran 154 tests in about 17 s ... OK (144 existing + 10)
+  Complete suite:               python -B -m unittest discover -s tests
+                                Ran 560 tests in 63.7 s ... OK
+                                (494 before + 66 new). Plain "OK": ZERO skipped, zero
+                                expected failures. All 494 earlier tests unchanged and
+                                passing (none weakened or deleted).
+  Regression subset before writing tests (history, schema, context, history page,
+    app error paths, API history and side effects, pipeline): 145 tests OK.
+Mutation checks (on a COPY in the scratchpad, never the real files): 17 mutations
+  (no lock, read error treated as damaged again, fixed temp name, no temp cleanup,
+  no replace retry, no fsync, non-unique damaged copies, non-atomic write, no stale
+  sweep, RunStore back to a fixed temp, clear without the lock, invalid UTF-8
+  crash, no OS-level lock, reading takes the lock, a failed copy-aside still
+  replaces, lock timeout not an explicit error): 16 of 16 applicable mutations were
+  caught (the one "OK" broke the POSIX lock branch, which does not run on Windows;
+  its Windows twin was caught). The unmodified copy passed 130/130.
+One finding during testing: the reader-versus-writer test failed once when my test
+  set the retry pause to zero (instant retries); with the real 50 ms pause it is
+  stable. The test now uses the production setting.
 
 --------------------------------------------------------------------------------
-6. DOCUMENTATION
+6. REMAINING LIMITATIONS AND RISKS
 --------------------------------------------------------------------------------
-docs/react-frontend-plan.md updated: status, endpoint naming (C7), state management
-(no Zustand), roadmap (Phase 2 done) and a new section 16 (as built, deviations,
-corrections applied, findings, limitations, Phase 3). README.md: API section,
-install and launch commands, test instructions, layout, test count (494).
+  * The lock is advisory: a program that does not use it (an older AETHER, a manual
+    edit) can still write; its writes are atomic but could race with ours.
+  * RunStore has atomic writes but NO lock: simultaneous saves of the same run are
+    last-writer-wins. Phase 3 needs per-run locks (planned).
+  * Workspace.write_text still uses a fixed .tmp name (single writer per run).
+  * Streamlit still shows a damaged or unreadable history as empty (K36, by
+    decision). Streamlit's "Delete all" is not wrapped in a try, so a HistoryError
+    there would show an error page (the same exposure as before for a failed write).
+  * A lock wait over 15 s (or a long machine suspension, K40) fails safely with
+    HistoryLockError; nothing is changed.
+  * Only Windows was exercised here. The POSIX (fcntl) branch is not run on this
+    machine. OneDrive may briefly hold files; the retries cover that.
+  * A new empty file history.json.lock appears beside the history (git-ignored).
+  * Test-helper observation (pre-existing, not changed): test_history_page and
+    test_workspace_page leave a TemporaryDirectory to implicit cleanup, visible only
+    with -W error::ResourceWarning.
+  Carried over (behaviour unchanged by owner decision): K34 tests use Streamlit
+  internals; K35 a saved run whose context cannot be loaded opens silently in
+  Streamlit; K36 a damaged history.json looks empty in Streamlit; K37 real-data check
+  is metadata only; K38 a partial write failure shows files but no message in
+  Streamlit; K39 the invalid-runs-folder error shows once in Streamlit; K40 flaky
+  timing (a machine suspension; first 150.9 s failure unproven); K41 the planner
+  fallback reason is not stored in runs from start_project (TracingPlanner hides it);
+  K28-K32 smoke-test isolation, suite time, fixed templates, coverage hygiene.
 
 --------------------------------------------------------------------------------
 7. OWNER DECISIONS AND PROJECT STATE (carried over)
@@ -170,19 +195,18 @@ requirements-api.txt, background jobs with polling in a later phase, Host/Origin
 validation with localhost binding (no per-launch token), Context + localStorage for
 preferences, TanStack Query for server state. Not implemented: React UI, write
 endpoints, jobs, SQLite, Docker sandbox, new agents, Live Agent Collaboration view.
-Done: Phase 0 (Tasks 003-007), tests (Tasks 008-010), K40 investigation (Task 011),
-React architecture plan, Phase 2 (Task 012). Tests: 494 passing, 0 skipped.
-Architecture (unchanged): blackboard pattern, Checkpoint A, file persistence under
-~/AETHER-projects/<run id>/ and .aether/history.json (max 25), stdlib-only
-templates (calculator, todo_web, library_api), Developer never runs code.
+Done: Phase 0 (Tasks 003-007), tests (008-010), K40 investigation (011), Phase 2
+read-only API (012, committed c593998), history persistence hardening (013, this).
+Tests: 560 passing, 0 skipped.
 
 --------------------------------------------------------------------------------
-8. NEXT STEP
+8. RECOMMENDED NEXT PHASE
 --------------------------------------------------------------------------------
-Owner review of Task 012, then Phase 3 (Task 013): POST /runs (202 + job), GET
-/jobs/{id}, POST /runs/{id}/decision (approve, reject, override with acknowledged),
-DELETE /history, bounded job registry, per-run and history locks, 409
-not_waiting_for_approval, the template guard, parity tests. Owner decisions needed
-first: (a) a defect task for history write hardening (R1), (b) whether to fix the
-TracingPlanner fallback note (K41), (c) whether job status should expose live
-progress (needs an optional core hook for an early run id).
+Owner review of Task 013 (commit when satisfied). Then Phase 3 (now Task 014), the
+write path: POST /runs (202 + job), GET /jobs/{id}, POST /runs/{id}/decision
+(approve, reject, override with acknowledged), DELETE /history; a bounded job
+registry; PER-RUN locks (using aether.fileio.exclusive_lock); map HistoryError to
+503; 409 not_waiting_for_approval; the template guard; parity tests. Decisions
+still needed first: (b) whether to fix the TracingPlanner fallback note (K41) in
+the core, (c) whether job status exposes live progress (needs an optional core hook
+for an early run id).
