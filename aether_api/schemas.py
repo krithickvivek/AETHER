@@ -282,6 +282,62 @@ class FileListResponse(BaseModel):
     files: list[FileInfo]
 
 
+# ------------------------------------------------------------------ jobs (task 014.2: read-only status of a job)
+
+JobKind = Literal["plan", "approve"]
+JobState = Literal["queued", "running", "succeeded", "failed", "interrupted"]   # "queued" is reserved, never produced
+JobStage = Literal["understanding", "planning", "awaiting_approval", "generating", "finished"]
+
+
+class LastEvent(BaseModel):
+    agent: str
+    action: str
+    status: str
+
+
+class JobProgress(BaseModel):
+    stage: JobStage
+    steps: list[ProgressStepView]    # Requirement, Plan, Approval, Generated files
+    event_count: int
+    last_event: LastEvent | None
+
+
+class JobResult(BaseModel):
+    """What a SUCCEEDED job reports. `succeeded` means the operation finished; read `run_status` for the project."""
+
+    run_status: str | None
+    ok: bool                         # a plan exists
+    ai_generated: bool
+    fallback_reason: str | None
+    files_count: int | None
+    warnings: list[str]              # for example "history_not_saved"
+
+
+class JobError(BaseModel):
+    """Why a job FAILED or was INTERRUPTED: a code and a fixed message, never an exception text, path or traceback."""
+
+    code: str                        # storage_unavailable, internal_error, worker_lost, server_shutdown, ...
+    message: str
+
+
+class JobView(BaseModel):
+    """One job. running: result and error are null. succeeded: result set. failed: error set.
+    interrupted: error.code is "server_shutdown" and result is null."""
+
+    job_id: str
+    kind: JobKind
+    state: JobState
+    run_id: str | None               # null until a planning job has saved its run
+    instance_id: str                 # random per server process: jobs of an earlier instance do not exist here
+    created_at: str                  # the core's naive local ISO-8601 timestamps
+    started_at: str | None
+    finished_at: str | None
+    duration_ms: float | None
+    progress: JobProgress
+    result: JobResult | None
+    error: JobError | None
+
+
 class FileContentResponse(BaseModel):
     path: str
     language: str | None

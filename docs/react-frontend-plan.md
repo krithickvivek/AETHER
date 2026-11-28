@@ -143,7 +143,7 @@ tests/test_api_*.py             backend tests (unittest + TestClient), same isol
 | `GET /runs/{run_id}` | Full run view: requirement, brief, plan (numbered, phase, origin), progress steps, events, approvals, notes, files, `actions` (see below), load warnings | `RunStore.load`, `progress_steps`, `step_origin` |
 | `GET /history/{entry_id}` | Saved snapshot (plan, saved stages, Manager log, run time), with its stored run when that can still be loaded | `history.entry_to_result` |
 | `GET /runs/{run_id}/checkpoint?override=` | Checkpoint A preview: template, fit status/evidence/supported/unsupported, planned files with covered steps, uncovered steps, candidates, override consequences | `developer.preview` |
-| `POST /runs/{run_id}/decision` `{decision: approve\|reject, note?, override?, acknowledged?}` | Approve, reject or override. Returns the updated run | `decide_plan` |
+| `POST /runs/{run_id}/approve` and `POST /runs/{run_id}/reject` (SUPERSEDES the single `decision` endpoint; see docs/phase-3-api-write-architecture.md) | Approve (202 + job, optional override with `acknowledged`) or reject (200, synchronous) | `decide_plan` |
 | `GET /runs/{run_id}/files` | File records (path, size, sha256, covers, language) | `context.files` |
 | `GET /runs/{run_id}/files/content?path=` | Content plus `changed` flag (current sha256 vs recorded) | `Workspace.read_text` |
 | `GET /runs/{run_id}/plan.md` | Markdown download | `plan_to_markdown` |
@@ -391,7 +391,7 @@ tests/api_support.py + tests/test_api_{basic,contract,errors,files,history,runs,
 Endpoints (all GET, under `/api/v1`): `health`, `config`, `planners/ollama/status`, `history`, `history/{entry_id}`,
 `runs/{run_id}`, `runs/{run_id}/checkpoint[?override=]`, `runs/{run_id}/files`, `runs/{run_id}/files/content?path=`,
 `runs/{run_id}/plan.md`, plus `openapi.json`. Not implemented on purpose: `POST /runs`, `GET /jobs/{id}`,
-`POST /runs/{id}/decision`, `DELETE /history`, or any other write.
+`POST /runs/{id}/approve`, `POST /runs/{id}/reject`, `DELETE /history`, or any other write.
 
 ### 16.3 Deviations from sections 1 to 15 (and why)
 - `presenters.py` and `deps.py` were added; `jobs.py` and `locks.py` were NOT created: a read-only API needs no job registry or
@@ -445,7 +445,11 @@ writes nothing; only a file that was read and is really corrupt is copied aside,
 same atomic write (no lock; Phase 3 adds per-run locks). Reads stay lock-free and the API is unchanged; Streamlit still shows a
 damaged or unreadable file as an empty history (K36, by decision). Details are in the development log.
 
-### 16.8 Phase 3 (next, now Task 014): the write path
+### 16.8 Phase 3 (next, Task 014): the write path
+**The detailed, current design is `docs/phase-3-api-write-architecture.md` (Task 014.1).** It supersedes the summary below where
+they differ: `POST .../decision` is split into `/approve` (202 + job) and `/reject` (200); run id and progress come from an
+`ObservedRunStore` (no core change); per-run locks live under `<runs folder>/.locks/`.
+
 Scope: `POST /api/v1/runs` (202 + job), `GET /api/v1/jobs/{id}`, `POST /api/v1/runs/{id}/decision` (approve, reject, override with
 `acknowledged`), `DELETE /api/v1/history`; bounded in-memory job registry (TTL, size cap, one Ollama job at a time); per-run and
 history locks; `jobs.py` and `locks.py`; request schemas; 409 `not_waiting_for_approval`; the template guard (no template and

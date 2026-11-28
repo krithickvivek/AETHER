@@ -27,6 +27,7 @@ EXPECTED_ENDPOINTS = {
     ("GET", f"{API}/runs/{{run_id}}/files"),
     ("GET", f"{API}/runs/{{run_id}}/files/content"),
     ("GET", f"{API}/runs/{{run_id}}/plan.md"),
+    ("GET", f"{API}/jobs/{{job_id}}"),  # task 014.2: the job status endpoint (still a read)
 }
 
 

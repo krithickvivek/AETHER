@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aether_api import repository as repo
+from aether_api.jobs import JobNotFound
 from aether_api.presenters import InvalidOverride, scrub
 
 # domain exception -> (HTTP status, error code, default message)
@@ -46,6 +47,12 @@ async def _history_unavailable(request: Request, error: repo.HistoryUnavailable)
     return error_response(503, "history_unavailable", "The history file could not be read.")
 
 
+async def _job_not_found(request: Request, error: JobNotFound) -> JSONResponse:
+    details = {"hint": "Jobs are kept in memory only (and purged after a while); read the run with GET /runs/{run_id}.",
+               "instance_id": error.instance_id}  # the CURRENT instance, so a client can tell a restart from a typo
+    return error_response(404, "job_not_found", "There is no job with this id.", details)
+
+
 async def _validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
     details = [{"location": ".".join(str(part) for part in item["loc"]), "message": item["msg"]}
                for item in error.errors()]  # the offending input is deliberately not echoed back
@@ -65,6 +72,7 @@ def install_error_handlers(app: FastAPI) -> None:
     for exception, (status, code, default) in DOMAIN_ERRORS.items():
         app.add_exception_handler(exception, _domain_handler(status, code, default))
     app.add_exception_handler(repo.HistoryUnavailable, _history_unavailable)
+    app.add_exception_handler(JobNotFound, _job_not_found)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(Exception, _unexpected)
