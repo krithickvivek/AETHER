@@ -6,6 +6,47 @@ You describe the software you want. A **Manager** agent analyses the requirement
 
 Everything runs on your computer. No API keys, paid services or cloud models are used.
 
+## Problem and motivation
+
+Turning an idea such as "a to-do website where users can log in" into working software starts with the same steps every time: understand what is asked, break it into phases, and decide what to build. Large language models can write code, but their output is hard to trust: it is not reproducible, it is rarely checked, and the person using it often cannot see what was decided or why.
+
+AETHER explores a more controlled alternative. Work is split between small, specialised agents, every decision is recorded, a human approves the plan before anything is written, and the code that is produced comes from templates that were written and tested in advance rather than from a model.
+
+## Objectives
+
+- Show a multi-agent workflow (Manager, Planner, Developer) that turns a plain-language requirement into a phased plan.
+- Keep a human in control through an explicit approval checkpoint before any file is created.
+- Record what really happened (events, approvals, fallbacks, failures) instead of presenting an optimistic summary.
+- Run entirely on one computer, with no accounts, API keys or paid services.
+- Keep the core usable without a user interface, so the same logic serves the command line, the web interface and the web API.
+
+## Architecture and workflow
+
+```
+Requirement ──► Manager ──► Planner ──► Plan ──► Checkpoint A (you approve or reject) ──► Developer ──► Project files
+                  │            │                                                             │
+                  └────────────┴──────────── every step is recorded in the run's activity log ┘
+```
+
+1. **Manager** cleans up the requirement, detects the features it mentions (login, data storage, web pages, API) from keywords, and builds a `TaskBrief`.
+2. **Planner** turns the brief into a phased plan. The rule-based planner is the default; the optional local AI planner falls back to it automatically if anything goes wrong.
+3. **Checkpoint A** pauses the run. Nothing is written until you approve; rejecting ends the run with no files.
+4. **Developer** chooses a template conservatively, copies it into a separate run folder and records a SHA-256 checksum for each file.
+
+Agents never change the shared context directly: they return results, and the Manager applies and records them. Each run is saved as `context.json` plus an `events.jsonl` activity log.
+
+## Technologies used
+
+| Area | Technology |
+|---|---|
+| Language | Python 3.10 or newer (developed with 3.11) |
+| Core library, command line, generated projects | Python standard library only |
+| Web interface | [Streamlit](https://streamlit.io) 1.57 or newer |
+| Web API (read-only) | [FastAPI](https://fastapi.tiangolo.com) with Pydantic and Starlette, served by [Uvicorn](https://www.uvicorn.org); [httpx](https://www.python-httpx.org) for the API tests |
+| Experimental local AI planner | [Ollama](https://ollama.com) with the `llama3.2:1b` model (optional) |
+| Tests | Python `unittest`, Streamlit `AppTest` |
+| Generated project data | SQLite, in the to-do and library templates only |
+
 ## Status at a glance
 
 | Agent | Status | How it works today |
@@ -47,7 +88,7 @@ Templates use only Python's standard library, so a generated project runs withou
 ## Setup
 
 ```bash
-git clone <repository-url> AETHER
+git clone https://github.com/krithickvivek/AETHER.git AETHER
 cd AETHER
 python -m venv .venv
 ```
@@ -93,7 +134,9 @@ python -m aether_api                              # then open http://127.0.0.1:8
 - `python -m aether_api --dev` also accepts the Vite development server (`localhost:5173`), for the React interface.
 - `python -m aether_api --dump-openapi` prints the OpenAPI document (used later to generate TypeScript types).
 - It reads the same data as the Streamlit app (`AETHER_RUNS_DIR`, `AETHER_HISTORY_FILE`) and writes nothing.
-- Endpoints, all `GET` under `/api/v1`: `health`, `config`, `planners/ollama/status`, `history`, `history/{entry_id}`, `runs/{run_id}`, `runs/{run_id}/checkpoint`, `runs/{run_id}/files`, `runs/{run_id}/files/content?path=...` and `runs/{run_id}/plan.md`.
+- Endpoints, all `GET` under `/api/v1`: `health`, `config`, `planners/ollama/status`, `history`, `history/{entry_id}`, `runs/{run_id}`, `runs/{run_id}/checkpoint`, `runs/{run_id}/files`, `runs/{run_id}/files/content?path=...`, `runs/{run_id}/plan.md` and `jobs/{job_id}`.
+- `jobs/{job_id}` reports the status of a background job from an in-memory job registry. Nothing creates jobs yet (run creation and approval over the API are planned, see `docs/phase-3-api-write-architecture.md`), so every lookup currently answers `404 job_not_found`.
+- The OpenAPI description is served at `/api/v1/openapi.json` while the API is running. FastAPI's `/docs` page is switched off on purpose, because it loads scripts from a CDN and this API stays offline.
 - Errors always look like `{"error": {"code": "...", "message": "...", "details": ...}}`. Paths in responses are short `~/...` forms, never absolute.
 - Tests: `python -m unittest discover -s tests -p "test_api_*.py" -v`. They need the packages above and **fail (they never skip)** if those are missing.
 
@@ -144,7 +187,7 @@ ollama pull llama3.2:1b
 python -m unittest discover -s tests -v
 ```
 
-The suite has 560 tests (154 of them test the web API, which needs `requirements-api.txt`) and takes about one minute.
+The suite has 656 tests (250 of them test the web API, which needs `requirements-api.txt`) and takes between one and two minutes.
 
 - The web interface is tested without a browser using Streamlit's `AppTest`. Those tests are skipped if Streamlit is not installed.
 - Tests use temporary folders for history, runs and generated files, so they never touch your real data.
@@ -159,10 +202,14 @@ main.py                     Command-line entry point (planning only)
 requirements.txt            Dependency for the web interface (streamlit)
 requirements-api.txt        Dependencies for the read-only web API and its tests (fastapi, uvicorn, httpx)
 .streamlit/config.toml      Local-only server, no usage statistics, dark and light themes
+LICENSE                     MIT License
+AETHER_DEVELOPMENT_LOG.txt  Status of the latest development task
 
 aether/                     Core library (no UI)
   models.py                 Shared data: TaskBrief, PlanStep, Plan
-  manager.py                ManagerAgent: feature detection, pipeline, checkpoints, approve and resume
+  manager.py                ManagerAgent: pipeline, checkpoints, approve and resume
+  feature_detection.py      Keyword rules that decide which features a requirement or plan step mentions
+  schema.py                 Schema versions for saved data, with tolerant, validated loading
   agents.py                 Agent interface (AgentResult) and PlannerAgent
   planner.py                Planner interface and RuleBasedPlanner with its step rules
   ollama_planner.py         Experimental OllamaPlanner (local llama3.2:1b) and its output checks
@@ -184,8 +231,9 @@ aether_api/                 Read-only web API (FastAPI) over the same core: no a
   security.py               Host allow-list and Origin checks (localhost only, no CORS)
   repository.py             Reads runs, history and files through RunStore / history / Workspace
   presenters.py, schemas.py Response models (the API contract) and the mapping from core objects
-  routers/                  health, config, history, runs, files
-docs/                       Planning documents (react-frontend-plan.md)
+  jobs.py                   In-memory registry of background jobs (standard library only; nothing starts jobs yet)
+  routers/                  health, config, history, runs, files, jobs
+docs/                       Planning documents (react-frontend-plan.md, phase-3-api-write-architecture.md)
 
 tests/                      Unit and interface tests (built-in unittest); test_api_*.py cover the web API
 ```
@@ -198,8 +246,23 @@ tests/                      Unit and interface tests (built-in unittest); test_a
 - **The AI planner is experimental** and uses a very small model. The rule-based planner is the default.
 - **Designed for one person on one computer.** There are no user accounts, history is shared by everyone using the same installation, generated files are only shown in the browser (there is no download), and the server only accepts connections from this computer. It is not ready to be hosted publicly as it is.
 
+## Future improvements
+
+These are planned or possible next steps, not features that exist today.
+
+- Build the Reviewer, Tester and Documentation agents.
+- Add write operations to the web API (create, approve and reject runs, with background jobs); the design is in `docs/phase-3-api-write-architecture.md`.
+- Build the React web interface described in `docs/react-frontend-plan.md`.
+- Support more project types and adapt generated code to the requirement instead of copying a template unchanged.
+
 ## Extending AETHER
 
-- **Detect a new feature:** add keywords to `FEATURE_KEYWORDS` in `aether/manager.py`, and steps with the same feature name to `FEATURE_STEPS` in `aether/planner.py`.
+- **Detect a new feature:** add keywords to `FEATURE_KEYWORDS` in `aether/feature_detection.py`, and steps with the same feature name to `FEATURE_STEPS` in `aether/planner.py`.
 - **Add a planner:** subclass `Planner`, implement `create_plan(brief) -> Plan`, add it to `build_planner()` in `aether/config.py`, and wrap it in `FallbackPlanner` to keep the rule-based safety net. The Manager and the data models do not change.
 - **Add an agent:** subclass `Agent` in `aether/agents.py` and return an `AgentResult`. Agents never change the shared context directly; the Manager applies their results and records them.
+
+## License and contributions
+
+AETHER is released under the [MIT License](LICENSE). Copyright (c) 2026 Krithick Vivekananda.
+
+It is a student project and is not currently seeking outside contributions. Questions and bug reports are welcome as GitHub issues on the repository. If you fork it, please keep the license notice.
