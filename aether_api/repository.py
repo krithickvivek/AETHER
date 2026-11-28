@@ -28,6 +28,7 @@ from aether_ui.workflow import RunResult
 T = TypeVar("T")
 READ_ATTEMPTS = 3
 READ_RETRY_DELAY = 0.05  # seconds
+HISTORY_READ_ATTEMPTS = 3  # reads of the history that may be spoiled by a writer saving in between
 
 
 # ------------------------------------------------------------------ domain errors (no HTTP here)
@@ -178,13 +179,16 @@ class FileRunRepository:
 
     def read_history(self) -> HistoryRead:
         path = history.history_path()
-        state, raw_count = self._probe_history(path)
-        if state in ("damaged", "unreadable"):
-            return HistoryRead(state)
-        entries, problems = history.load_history_report(path)  # the core's own validation, entry by entry
-        if len(entries) + len(problems) != raw_count:  # the file changed or could not be read a second time
-            return HistoryRead("unreadable")
-        return HistoryRead(state, entries, problems)
+        for _ in range(HISTORY_READ_ATTEMPTS):
+            state, raw_count = self._probe_history(path)
+            if state in ("damaged", "unreadable"):
+                return HistoryRead(state)
+            entries, problems = history.load_history_report(path)  # the core's own validation, entry by entry
+            if len(entries) + len(problems) == raw_count:
+                return HistoryRead(state, entries, problems)
+            # The file changed between the two reads (a writer saved in between): a healthy history, read at two
+            # moments. Read again; only a file that keeps changing, or cannot be read twice, is reported as unreadable.
+        return HistoryRead("unreadable")
 
     @staticmethod
     def _probe_history(path: Path) -> tuple[str, int]:

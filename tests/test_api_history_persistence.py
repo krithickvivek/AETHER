@@ -100,6 +100,38 @@ class ApiHistoryPersistenceTests(ApiTestCase):
         self.assertEqual((final["file_state"], len(final["entries"])), ("ok", 12))
         self.assertEqual(counts, sorted(counts), "the history only grows, so reads never go backwards")
 
+    def test_a_save_between_the_two_reads_of_the_history_is_not_reported_as_unreadable(self):
+        """Regression: read_history() reads the file twice (count, then load). A writer landing in between used to make
+        the counts differ, and a perfectly healthy history was reported as `unreadable` (seen once in a loaded full run)."""
+        self.save("first")
+        real, loads = history.load_history_report, []
+
+        def load_after_a_save(path=None):
+            if not loads:
+                self.save("second")  # a writer lands exactly between the probe and the load
+            loads.append(path)
+            return real(path)
+
+        with mock.patch.object(history, "load_history_report", load_after_a_save):
+            body = self.get("/history").json()
+        self.assertEqual((body["file_state"], body["problems"]), ("ok", []))
+        self.assertEqual(sorted(e["requirement"] for e in body["entries"]), ["first", "second"])
+        self.assertEqual(len(loads), 2, "the repository read again instead of giving up")
+
+    def test_a_history_that_keeps_changing_is_still_reported_honestly_after_a_few_tries(self):
+        self.save("first")
+        real, loads = history.load_history_report, []
+
+        def load_after_every_save(path=None):
+            self.save(f"again {len(loads)}")  # the file changes between the probe and the load, every single time
+            loads.append(path)
+            return real(path)
+
+        with mock.patch.object(history, "load_history_report", load_after_every_save):
+            body = self.get("/history").json()
+        self.assertEqual((body["file_state"], body["entries"]), ("unreadable", []))
+        self.assertEqual(len(loads), 3, "a bounded number of tries, then the truth")
+
     def test_the_api_can_read_while_another_operation_holds_the_history_lock(self):
         self.save("a")
         before = snapshot_tree(self.base)
